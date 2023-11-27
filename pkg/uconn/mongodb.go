@@ -9,8 +9,10 @@ import (
 	"github.com/activecm/rita/pkg/data"
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/util"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/globalsign/mgo"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 
@@ -34,15 +36,11 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes creates indexes for the uconn collection
 func (r *repo) CreateIndexes() error {
-
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := r.config.T.Structure.UniqueConnTable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -51,16 +49,58 @@ func (r *repo) CreateIndexes() error {
 		}
 	}
 
-	indexes := []mgo.Index{
-		{Key: []string{"src", "dst", "src_network_uuid", "dst_network_uuid"}, Unique: true},
-		{Key: []string{"src", "src_network_uuid"}},
-		{Key: []string{"dst", "dst_network_uuid"}},
-		{Key: []string{"dat.count"}},
-		{Key: []string{"dat.maxdur"}},
-		{Key: []string{"strobe"}},
-		{Key: []string{"count"}},
-		{Key: []string{"tbytes"}},
-		{Key: []string{"tdur"}},
+	indexes := []mongo.IndexModel{
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "src", Value: 1},
+				{Key: "dst", Value: 1},
+				{Key: "src_network_uuid", Value: 1},
+				{Key: "dst_network_uuid", Value: 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{Key: "src", Value: 1},
+				{Key: "src_network_uuid", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "dst", Value: 1},
+				{Key: "dst_network_uuid", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "dat.count", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "dat.maxdur", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "strobe", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "count", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "tbytes", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "tdur", Value: 1},
+			},
+		},
 	}
 
 	// create collection

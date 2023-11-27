@@ -6,8 +6,8 @@ import (
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type (
@@ -22,7 +22,7 @@ type (
 	}
 )
 
-//newCIDRemover creates a new writer object to write output data
+// newCIDRemover creates a new writer object to write output data
 func newCIDRemover(cid int, db *database.DB, conf *config.Config, log *log.Logger) *writer {
 	return &writer{
 		cid:               cid,
@@ -33,7 +33,7 @@ func newCIDRemover(cid int, db *database.DB, conf *config.Config, log *log.Logge
 	}
 }
 
-//newUpdater creates a new writer object to write output data
+// newUpdater creates a new writer object to write output data
 func newUpdater(cid int, db *database.DB, conf *config.Config, log *log.Logger) *writer {
 	return &writer{
 		cid:            cid,
@@ -44,44 +44,39 @@ func newUpdater(cid int, db *database.DB, conf *config.Config, log *log.Logger) 
 	}
 }
 
-//collect sends a group of results to the writer for writing out to the database
+// collect sends a group of results to the writer for writing out to the database
 func (w *writer) collectCIDRemover(data string) {
 	w.cidRemoverChannel <- data
 }
 
-//collect sends a group of results to the writer for writing out to the database
+// collect sends a group of results to the writer for writing out to the database
 func (w *writer) collectUpdater(data update) {
 	w.updaterChannel <- data
 }
 
-//closeCIDRemover waits for the write threads to finish
+// closeCIDRemover waits for the write threads to finish
 func (w *writer) closeCIDRemover() {
 	close(w.cidRemoverChannel)
 	w.writeWg.Wait()
 }
 
-//closeUpdater waits for the write threads to finish
+// closeUpdater waits for the write threads to finish
 func (w *writer) closeUpdater() {
 	close(w.updaterChannel)
 	w.writeWg.Wait()
 }
 
-//startCIDRemover kicks off a new write thread
+// startCIDRemover kicks off a new write thread
 func (w *writer) startCIDRemover() {
 	w.writeWg.Add(1)
 	go func() {
-		ssn := w.db.Session.Copy()
-		defer ssn.Close()
-
 		for data := range w.cidRemoverChannel {
-
 			//delete the ENTIRE record if it hasn't been updated since the chunk we are trying to remove
-			info, err := ssn.DB(w.db.GetSelectedDB()).C(data).RemoveAll(bson.M{"cid": w.cid})
-			if err != nil ||
-				((info.Updated == 0) && (info.Removed == 0) && (info.Matched != 0)) {
+			delInfo, err := w.db.Client.Database(w.db.GetSelectedDB()).Collection(data).DeleteMany(w.db.Context, bson.M{"cid": w.cid})
+			if err != nil || delInfo.DeletedCount == 0 {
 				w.log.WithFields(log.Fields{
 					"Module":  "remover",
-					"Info":    info,
+					"Info":    delInfo,
 					"Data":    data,
 					"Message": "failed to delete whole document",
 				}).Error(err)
@@ -89,12 +84,12 @@ func (w *writer) startCIDRemover() {
 
 			// this ONLY deletes a specific chunk's DATA from a record that HAS been updated recently and doesn't need to be completely
 			// removed - only the target chunk's stats should be removed from it
-			info, err = ssn.DB(w.db.GetSelectedDB()).C(data).UpdateAll(bson.M{"dat.cid": w.cid}, bson.M{"$pull": bson.M{"dat": bson.M{"cid": w.cid}}})
+			updateInfo, err := w.db.Client.Database(w.db.GetSelectedDB()).Collection(data).UpdateMany(w.db.Context, bson.M{"dat.cid": w.cid}, bson.M{"$pull": bson.M{"dat": bson.M{"cid": w.cid}}})
 			if err != nil ||
-				((info.Updated == 0) && (info.Removed == 0) && (info.Matched != 0)) {
+				((updateInfo.ModifiedCount == 0) && (updateInfo.UpsertedCount == 0) && (updateInfo.MatchedCount != 0)) {
 				w.log.WithFields(log.Fields{
 					"Module":  "remover",
-					"Info":    info,
+					"Info":    updateInfo,
 					"Data":    data,
 					"Message": "failed to delete chunk",
 				}).Error(err)
@@ -105,16 +100,12 @@ func (w *writer) startCIDRemover() {
 	}()
 }
 
-//startUpdater kicks off a new write thread
+// startUpdater kicks off a new write thread
 func (w *writer) startUpdater() {
 	w.writeWg.Add(1)
 	go func() {
-		ssn := w.db.Session.Copy()
-		defer ssn.Close()
-
 		for data := range w.updaterChannel {
-
-			err := ssn.DB(w.db.GetSelectedDB()).C(data.collection).Update(data.selector, data.query)
+			_, err := w.db.Client.Database(w.db.GetSelectedDB()).Collection(data.collection).UpdateMany(w.db.Context, data.selector, data.query)
 			if err != nil {
 				fmt.Println(err, data)
 			}

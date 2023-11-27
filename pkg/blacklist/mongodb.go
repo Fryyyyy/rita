@@ -10,8 +10,8 @@ import (
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -33,24 +33,20 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes sets up the indices needed to find hosts which contacted unsafe hosts
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
-
-	coll := session.DB(r.database.GetSelectedDB()).C(r.config.T.Structure.HostTable)
+	coll := r.database.Client.Database(r.database.GetSelectedDB()).Collection(r.config.T.Structure.HostTable)
 
 	// create hosts collection
 	// Desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"dat.bl.ip", "dat.bl.network_uuid"}},
-	}
-
-	for _, index := range indexes {
-		err := coll.EnsureIndex(index)
-		if err != nil {
-			return err
+	index :=
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"dat.bl.ip", 1},
+				{"dat.bl.network_uuid", 1},
+			},
 		}
-	}
-	return nil
+
+	_, err := coll.Indexes().CreateOne(r.database.Context, index)
+	return err
 }
 
 // Upsert creates threat intel records in the host collection for the hosts which
@@ -82,12 +78,8 @@ func (r *repo) Upsert() {
 	// NOTE: we cannot use the (hostMap map[string]*host.Input)
 	// since we are creating peer statistic summaries for the entire
 	// observation period not just this import session
-	session := r.database.Session.Copy()
-	defer session.Close()
+	numUnsafeHosts, err := r.database.Client.Database(r.database.GetSelectedDB()).Collection(r.config.T.Structure.HostTable).CountDocuments(r.database.Context, bson.M{"blacklisted": true})
 
-	unsafeHostsQuery := session.DB(r.database.GetSelectedDB()).C(r.config.T.Structure.HostTable).Find(bson.M{"blacklisted": true})
-
-	numUnsafeHosts, err := unsafeHostsQuery.Count()
 	if err != nil {
 		r.log.WithFields(log.Fields{
 			"Module": "bl_updater",
@@ -108,18 +100,15 @@ func (r *repo) Upsert() {
 		mpb.AppendDecorators(decor.Percentage()),
 	)
 
-	var unsafeHost data.UniqueIP
-	unsafeHostIter := unsafeHostsQuery.Iter()
-	for unsafeHostIter.Next(&unsafeHost) {
+	cursor, err := r.database.Client.Database(r.database.GetSelectedDB()).Collection(r.config.T.Structure.HostTable).Find(r.database.Context, bson.M{"blacklisted": true})
+	for cursor.Next(r.database.Context) {
+		var unsafeHost data.UniqueIP
+		if err := cursor.Decode(&unsafeHost); err != nil {
+			panic(err)
+		}
 		analyzerWorker.collect(unsafeHost)
 		bar.IncrBy(1)
 	}
-	if err := unsafeHostIter.Close(); err != nil {
-		r.log.WithFields(log.Fields{
-			"Module": "bl_updater",
-		}).Error(err)
-	}
-
 	p.Wait()
 
 }

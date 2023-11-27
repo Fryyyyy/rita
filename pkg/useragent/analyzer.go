@@ -6,7 +6,7 @@ import (
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // rareSignatureOrigIPsCutoff determines the cutoff for marking a particular IP as having used
@@ -59,9 +59,6 @@ func (a *analyzer) close() {
 func (a *analyzer) start() {
 	a.analysisWg.Add(1)
 	go func() {
-		ssn := a.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range a.analysisChannel {
 			useragentsSelector := bson.M{"user_agent": datum.Name}
 			useragentsQuery := useragentsQuery(datum, a.chunk)

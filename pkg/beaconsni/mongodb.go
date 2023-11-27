@@ -10,9 +10,11 @@ import (
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/pkg/sniconn"
 	"github.com/activecm/rita/util"
-	"github.com/globalsign/mgo"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -34,15 +36,11 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes creates indexes for the beaconSNI collection
 func (r *repo) CreateIndexes() error {
-
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := r.config.T.BeaconSNI.BeaconSNITable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{{}})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -52,13 +50,42 @@ func (r *repo) CreateIndexes() error {
 	}
 
 	// set desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"-score"}},
-		{Key: []string{"src", "fqdn", "src_network_uuid"}, Unique: true},
-		{Key: []string{"src", "src_network_uuid"}},
-		{Key: []string{"fqdn"}},
-		{Key: []string{"responding_ips.ip", "responding_ips.network_uuid"}},
-		{Key: []string{"-connection_count"}},
+	indexes := []mongo.IndexModel{
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"score", -1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"src", 1},
+				{"fqdn", 1},
+				{"src_network_uuid", 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"src", 1},
+				{"src_network_uuid", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"fqdn", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"responding_ips.ip", 1},
+				{"responding_ips.network_uuid", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"connection_count", -1},
+			},
+		},
 	}
 
 	// create collection

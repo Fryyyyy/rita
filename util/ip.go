@@ -7,7 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 var privateIPBlocks []*net.IPNet
@@ -153,8 +154,8 @@ func IPv4ToBinary(ipv4 net.IP) int64 {
 }
 
 // PublicNetworkUUID is the UUID bound to publicly routable UniqueIP addresses
-var PublicNetworkUUID bson.Binary = bson.Binary{
-	Kind: bson.BinaryUUID,
+var PublicNetworkUUID primitive.Binary = primitive.Binary{
+	Subtype: bson.TypeBinaryUUID,
 	Data: []byte{
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -165,8 +166,8 @@ var PublicNetworkUUID bson.Binary = bson.Binary{
 const PublicNetworkName string = "Public"
 
 // UnknownPrivateNetworkUUID ...
-var UnknownPrivateNetworkUUID bson.Binary = bson.Binary{
-	Kind: bson.BinaryUUID,
+var UnknownPrivateNetworkUUID primitive.Binary = primitive.Binary{
+	Subtype: bson.TypeBinaryUUID,
 	Data: []byte{
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,

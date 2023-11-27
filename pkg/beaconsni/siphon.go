@@ -5,8 +5,8 @@ import (
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type (
@@ -59,9 +59,6 @@ func (s *siphon) close() {
 func (s *siphon) start() {
 	s.siphonWg.Add(1)
 	go func() {
-		ssn := s.db.Session.Copy()
-		defer ssn.Close()
-
 		for data := range s.siphonChannel {
 
 			// check if uconn has become a strobe

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"time"
@@ -9,8 +10,11 @@ import (
 	"github.com/activecm/rita/parser/files"
 	"github.com/blang/semver"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -19,16 +23,17 @@ type (
 	MetaDB struct {
 		lock     *sync.Mutex    // Read and write lock
 		config   *config.Config // configuration info
-		dbHandle *mgo.Session   // Database handle
+		dbHandle *mongo.Client  // Database handle
 		log      *log.Logger    // Logging object
+		context  context.Context
 	}
 
 	// LogInfo defines information about the UpdateChecker log
 	LogInfo struct {
-		ID      bson.ObjectId `bson:"_id,omitempty"`   // Ident
-		Time    time.Time     `bson:"LastUpdateCheck"` // Top level name of the database
-		Message string        `bson:"Message"`         // Top level name of the database
-		Version string        `bson:"NewestVersion"`   // Top level name of the database
+		ID      primitive.ObjectID `bson:"_id,omitempty"`   // Ident
+		Time    time.Time          `bson:"LastUpdateCheck"` // Top level name of the database
+		Message string             `bson:"Message"`         // Top level name of the database
+		Version string             `bson:"NewestVersion"`   // Top level name of the database
 	}
 
 	// Range defines a min and max value
@@ -39,39 +44,39 @@ type (
 
 	// DBMetaInfo defines some information about the database
 	DBMetaInfo struct {
-		ID             bson.ObjectId `bson:"_id,omitempty"`   // Ident
-		Name           string        `bson:"name"`            // Top level name of the database
-		Analyzed       bool          `bson:"analyzed"`        // Has this database been analyzed
-		AnalyzeVersion string        `bson:"analyze_version"` // Rita version at analyze
-		Rolling        bool          `bson:"rolling"`
-		TotalChunks    int           `bson:"total_chunks"`
-		CurrentChunk   int           `bson:"current_chunk"`
-		TsRange        Range         `bson:"ts_range"`
+		ID             primitive.ObjectID `bson:"_id,omitempty"`   // Ident
+		Name           string             `bson:"name"`            // Top level name of the database
+		Analyzed       bool               `bson:"analyzed"`        // Has this database been analyzed
+		AnalyzeVersion string             `bson:"analyze_version"` // Rita version at analyze
+		Rolling        bool               `bson:"rolling"`
+		TotalChunks    int                `bson:"total_chunks"`
+		CurrentChunk   int                `bson:"current_chunk"`
+		TsRange        Range              `bson:"ts_range"`
 	}
 )
 
 // NewMetaDB instantiates a new handle for the RITA MetaDatabase
-func NewMetaDB(config *config.Config, dbHandle *mgo.Session,
-	log *log.Logger) *MetaDB {
+func NewMetaDB(ctx context.Context, config *config.Config, dbHandle *mongo.Client, log *log.Logger) *MetaDB {
 	metaDB := &MetaDB{
 		lock:     new(sync.Mutex),
 		config:   config,
 		dbHandle: dbHandle,
 		log:      log,
+		context:  ctx,
 	}
 
 	return metaDB
 }
 
-//GetRollingSettings gets the current rolling settings
+// GetRollingSettings gets the current rolling settings
 func (m *MetaDB) GetRollingSettings(db string) (exists bool, isRolling bool, currChunk int, totalChunks int, err error) {
 	// pull down dataset record from metadatabase
 	result, err := m.GetDBMetaInfo(db)
-	if err != nil && err != mgo.ErrNotFound {
+	if err != nil && err != mongo.ErrNoDocuments {
 		return
 	}
 
-	if err != mgo.ErrNotFound {
+	if err != mongo.ErrNoDocuments {
 		exists = true
 	}
 	err = nil
@@ -81,8 +86,8 @@ func (m *MetaDB) GetRollingSettings(db string) (exists bool, isRolling bool, cur
 	return
 }
 
-//SetRollingSettings ensures that a given db is marked as rolling,
-//ensures that total_chunks matches numchunks, and sets the current_chunk to chunk.
+// SetRollingSettings ensures that a given db is marked as rolling,
+// ensures that total_chunks matches numchunks, and sets the current_chunk to chunk.
 func (m *MetaDB) SetRollingSettings(db string, chunk int, numchunks int) error {
 	// pull down dataset record from metadatabase
 	result, err := m.GetDBMetaInfo(db)
@@ -92,8 +97,6 @@ func (m *MetaDB) SetRollingSettings(db string, chunk int, numchunks int) error {
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
 
 	selector := bson.M{"name": db}
 	update := bson.M{
@@ -121,7 +124,8 @@ func (m *MetaDB) SetRollingSettings(db string, chunk int, numchunks int) error {
 	}
 
 	// update rolling settings
-	_, err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).Upsert(selector, bson.M{"$set": update})
+	opts := options.Update().SetUpsert(true)
+	_, err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).UpdateMany(m.context, selector, bson.M{"$set": update}, opts)
 	if err != nil {
 		return err
 	}
@@ -129,15 +133,17 @@ func (m *MetaDB) SetRollingSettings(db string, chunk int, numchunks int) error {
 	return nil
 }
 
-//LastCheck returns most recent version check
+// LastCheck returns most recent version check
 func (m *MetaDB) LastCheck() (time.Time, semver.Version) {
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
 
-	iter := ssn.DB(m.config.S.MongoDB.MetaDB).C("logs").Find(bson.M{"Message": "Checking versions..."}).Sort("-Time").Iter()
+	cursor, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection("logs").Find(m.context, bson.M{"Message": "Checking versions..."})
+	if err != nil {
+		return time.Time{}, semver.Version{}
+	}
+	options.Find().SetSort(bson.D{{"Time", -1}})
 
 	var db LogInfo
-	iter.Next(&db)
+	cursor.Next(m.context)
 
 	retVersion, err := semver.ParseTolerant(db.Version)
 
@@ -153,10 +159,8 @@ func (m *MetaDB) LastCheck() (time.Time, semver.Version) {
 func (m *MetaDB) AddNewDB(name string, currentChunk, totalChunks int) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
 
-	err := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).Insert(
+	_, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).InsertOne(m.context,
 		DBMetaInfo{
 			Name:           name,
 			Analyzed:       false,
@@ -180,15 +184,15 @@ func (m *MetaDB) AddNewDB(name string, currentChunk, totalChunks int) error {
 		Set bool `bson:"set"`
 	}, totalChunks)
 
-	_, err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).
-		Upsert(
+	opts := options.Update().SetUpsert(true)
+	_, err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).
+		UpdateMany(m.context,
 			// selector
 			bson.M{"name": name},
 			// data
 			bson.M{"$set": bson.M{
 				"cid_list": cidList,
-			}},
-		)
+			}}, opts)
 	if err != nil {
 		return err
 	}
@@ -196,7 +200,7 @@ func (m *MetaDB) AddNewDB(name string, currentChunk, totalChunks int) error {
 	return nil
 }
 
-//DBExists returns whether or not a metadatabase record has been created for a database
+// DBExists returns whether or not a metadatabase record has been created for a database
 func (m *MetaDB) DBExists(name string) (bool, error) {
 	_, err := m.GetDBMetaInfo(name)
 	if err != nil && err != mgo.ErrNotFound {
@@ -221,17 +225,15 @@ func (m *MetaDB) DeleteDB(name string) error {
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
 
 	//delete the record
-	_, err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).RemoveAll(bson.M{"name": name})
+	_, err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).DeleteMany(m.context, bson.M{"name": name})
 	if err != nil {
 		return err
 	}
 
 	//delete any parsed file records associated
-	_, err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.FilesTable).RemoveAll(bson.M{"database": name})
+	_, err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.FilesTable).DeleteMany(m.context, bson.M{"database": name})
 	if err != nil {
 		return err
 	}
@@ -256,9 +258,6 @@ func (m *MetaDB) GetTSRange(name string) (int64, int64, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
 	type tsInfo struct {
 		Min int64 `bson:"min" json:"min"`
 		Max int64 `bson:"max" json:"max"`
@@ -269,7 +268,7 @@ func (m *MetaDB) GetTSRange(name string) (int64, int64, error) {
 	}
 
 	// get min and max timestamps
-	err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).Find(bson.M{"name": name}).One(&tsRes)
+	err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).FindOne(m.context, bson.M{"name": name}).Decode(&tsRes)
 
 	if err != nil {
 		m.log.WithFields(log.Fields{
@@ -302,18 +301,15 @@ func (m *MetaDB) AddTSRange(name string, min int64, max int64) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
-	_, err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).
-		Upsert(
+	opts := options.Update().SetUpsert(true)
+	_, err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).
+		UpdateMany(m.context,
 			bson.M{"_id": dbr.ID},
 			bson.M{
 				"$set": bson.M{
 					"ts_range.min": min,
 					"ts_range.max": max,
-				}},
-		)
+				}}, opts)
 
 	if err != nil {
 		m.log.WithFields(log.Fields{
@@ -349,16 +345,14 @@ func (m *MetaDB) MarkDBAnalyzed(name string, complete bool) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
-	_, err = ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).
-		Upsert(bson.M{"_id": dbr.ID}, bson.M{
+	opts := options.Update().SetUpsert(true)
+	_, err = m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).
+		UpdateMany(m.context, bson.M{"_id": dbr.ID}, bson.M{
 			"$set": bson.D{
-				{Name: "analyzed", Value: complete},
-				{Name: "analyze_version", Value: versionTag},
+				{"analyzed", complete},
+				{"analyze_version", versionTag},
 			},
-		})
+		}, opts)
 
 	if err != nil {
 		m.log.WithFields(log.Fields{
@@ -378,12 +372,12 @@ func (m *MetaDB) runDBMetaInfoQuery(queryDoc bson.M) ([]DBMetaInfo, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
 	var results []DBMetaInfo
-	err := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).Find(queryDoc).All(&results)
+	cursor, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).Find(m.context, queryDoc)
 	if err != nil {
+		return results, err
+	}
+	if err = cursor.All(m.context, &results); err != nil {
 		return results, err
 	}
 
@@ -395,17 +389,14 @@ func (m *MetaDB) SetChunk(cid int, db string, analyzed bool) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
-	_, err := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).
-		Upsert(
+	opts := options.Update().SetUpsert(true)
+	_, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).
+		UpdateMany(m.context,
 			bson.M{"name": db},
 			bson.M{
 				"$set": bson.M{
 					"cid_list." + strconv.Itoa(cid) + ".set": analyzed,
-				}},
-		)
+				}}, opts)
 
 	if err != nil {
 		m.log.WithFields(log.Fields{
@@ -423,9 +414,6 @@ func (m *MetaDB) IsChunkSet(cid int, db string) (bool, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
 	query := bson.M{
 		"$and": []interface{}{
 			bson.M{"name": db},
@@ -433,7 +421,7 @@ func (m *MetaDB) IsChunkSet(cid int, db string) (bool, error) {
 		},
 	}
 
-	queryCount, err := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.DatabasesTable).Find(query).Count()
+	queryCount, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.DatabasesTable).CountDocuments(m.context, query)
 
 	if err != nil {
 		return false, err
@@ -454,7 +442,7 @@ func (m *MetaDB) GetDBMetaInfo(name string) (DBMetaInfo, error) {
 		return DBMetaInfo{}, err
 	}
 	if len(results) == 0 {
-		return DBMetaInfo{}, mgo.ErrNotFound
+		return DBMetaInfo{}, mongo.ErrNoDocuments
 	}
 	return results[0], nil
 }
@@ -477,8 +465,8 @@ func (m *MetaDB) GetDatabases() []string {
 
 }
 
-//CheckCompatibleAnalyze checks if a database was analyzed with a version of
-//RITA which is compatible with the running version
+// CheckCompatibleAnalyze checks if a database was analyzed with a version of
+// RITA which is compatible with the running version
 func (m *MetaDB) CheckCompatibleAnalyze(targetDatabase string) (bool, error) {
 	dbData, err := m.GetDBMetaInfo(targetDatabase)
 	if err != nil {
@@ -529,41 +517,40 @@ func (m *MetaDB) GetFiles(database string) ([]files.IndexedFile, error) {
 	defer m.lock.Unlock()
 	var toReturn []files.IndexedFile
 
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
-
-	err := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.FilesTable).
-		Find(bson.M{"database": database}).Iter().All(&toReturn)
+	cursor, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.FilesTable).
+		Find(m.context, bson.M{"database": database})
 	if err != nil {
 		m.log.WithFields(log.Fields{
 			"error": err.Error(),
 		}).Error("could not fetch files from meta database")
 		return nil, err
 	}
+	if err = cursor.All(m.context, &toReturn); err != nil {
+		return toReturn, err
+	}
 	return toReturn, nil
 }
 
-//AddNewFilesToIndex adds indexed files to the files the metaDB using the bulk API
+// AddNewFilesToIndex adds indexed files to the files the metaDB using the bulk API
 func (m *MetaDB) AddNewFilesToIndex(files []*files.IndexedFile) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	if len(files) == 0 {
 		return nil
 	}
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
 
-	bulk := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.FilesTable).Bulk()
-	bulk.Unordered()
+	bulkOpts := options.BulkWrite().SetOrdered(false)
+	//bulk := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.FilesTable).Bulk()
+	//bulk.Unordered()
 
 	//construct the interface slice for bulk
-	interfaceSlice := make([]interface{}, len(files))
+	//interfaceSlice := make([]interface{}, len(files))
+	wmSlice := make([]mongo.WriteModel, len(files))
 	for i, d := range files {
-		interfaceSlice[i] = *d
+		wmSlice[i] = mongo.NewInsertOneModel().SetDocument(*d)
 	}
 
-	bulk.Insert(interfaceSlice...)
-	_, err := bulk.Run()
+	_, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.FilesTable).BulkWrite(m.context, wmSlice, bulkOpts)
 	if err != nil {
 		m.log.WithFields(log.Fields{
 			"error": err.Error(),
@@ -573,10 +560,10 @@ func (m *MetaDB) AddNewFilesToIndex(files []*files.IndexedFile) error {
 	return nil
 }
 
-//FilterOutPreviouslyIndexedFiles checks all indexedFiles passed in to ensure
-//that they have not previously been imported into the same database.
-//The files are compared based on their hashes (md5 of first 15000 bytes)
-//and the database they are slated to be imported into.
+// FilterOutPreviouslyIndexedFiles checks all indexedFiles passed in to ensure
+// that they have not previously been imported into the same database.
+// The files are compared based on their hashes (md5 of first 15000 bytes)
+// and the database they are slated to be imported into.
 func (m *MetaDB) FilterOutPreviouslyIndexedFiles(indexedFiles []*files.IndexedFile,
 	targetDatabase string) []*files.IndexedFile {
 
@@ -608,16 +595,14 @@ func (m *MetaDB) FilterOutPreviouslyIndexedFiles(indexedFiles []*files.IndexedFi
 	return toReturn
 }
 
-//RemoveFilesByChunk removes FilesTable entries for a given database chunk.
-//This helps provide the ability to re-import a given chunk.
+// RemoveFilesByChunk removes FilesTable entries for a given database chunk.
+// This helps provide the ability to re-import a given chunk.
 func (m *MetaDB) RemoveFilesByChunk(database string, cid int) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	ssn := m.dbHandle.Copy()
-	defer ssn.Close()
 
-	_, err := ssn.DB(m.config.S.MongoDB.MetaDB).C(m.config.T.Meta.FilesTable).
-		RemoveAll(bson.M{"database": database, "cid": cid})
+	_, err := m.dbHandle.Database(m.config.S.MongoDB.MetaDB).Collection(m.config.T.Meta.FilesTable).
+		DeleteMany(m.context, bson.M{"database": database, "cid": cid})
 	if err != nil {
 		m.log.WithFields(log.Fields{
 			"database": database,

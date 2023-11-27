@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/activecm/mgorus"
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	log "github.com/sirupsen/logrus"
@@ -40,16 +39,17 @@ func InitResources(userConfig string) *Resources {
 	}
 
 	// Allows code to create and remove tracked databases
-	metaDB := database.NewMetaDB(conf, db.Session, log)
+	metaDB := database.NewMetaDB(db.Context, conf, db.Client, log)
 
 	//Begin logging to the metadatabase
-	if conf.S.Log.LogToDB {
+	//TODO(Fryy): Logging
+	/*if conf.S.Log.LogToDB {
 		log.Hooks.Add(
 			mgorus.NewHookerFromSession(
-				db.Session, conf.S.MongoDB.MetaDB, conf.T.Log.RitaLogTable,
+				db.Client, conf.S.MongoDB.MetaDB, conf.T.Log.RitaLogTable,
 			),
 		)
-	}
+	}*/
 
 	//bundle up the system resources
 	r := &Resources{

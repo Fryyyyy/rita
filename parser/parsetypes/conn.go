@@ -2,13 +2,13 @@ package parsetypes
 
 import (
 	"github.com/activecm/rita/config"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // Conn provides a data structure for zeek's connection data
 type Conn struct {
 	// ID is the id coming out of mongodb
-	ID bson.ObjectId `bson:"_id,omitempty"`
+	ID primitive.ObjectID `bson:"_id,omitempty"`
 	// TimeStamp of this connection
 	TimeStamp int64 `bson:"ts" bro:"ts" brotype:"time" json:"-"`
 	// TimeStampGeneric is used when reading from json files
@@ -59,12 +59,12 @@ type Conn struct {
 	AgentUUID string `bson:"agent_uuid" bro:"agent_uuid" brotype:"string" json:"agent_uuid"`
 }
 
-//TargetCollection returns the mongo collection this entry should be inserted
+// TargetCollection returns the mongo collection this entry should be inserted
 func (line *Conn) TargetCollection(config *config.StructureTableCfg) string {
 	return config.ConnTable
 }
 
-//ConvertFromJSON performs any extra conversions necessary when reading from JSON
+// ConvertFromJSON performs any extra conversions necessary when reading from JSON
 func (line *Conn) ConvertFromJSON() {
 	line.TimeStamp = convertTimestamp(line.TimeStampGeneric)
 }

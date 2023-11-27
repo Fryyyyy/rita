@@ -1,26 +1,29 @@
 package database
 
 import (
+	"context"
 	"fmt"
+	"os"
 
-	"github.com/activecm/mgosec"
 	"github.com/activecm/rita/config"
 	"github.com/blang/semver"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
 	log "github.com/sirupsen/logrus"
 )
 
-//MinMongoDBVersion is the lower, inclusive bound on the
-//versions of MongoDB compatible with RITA
+// MinMongoDBVersion is the lower, inclusive bound on the
+// versions of MongoDB compatible with RITA
 var MinMongoDBVersion = semver.Version{
 	Major: 4,
 	Minor: 2,
 	Patch: 0,
 }
 
-//MaxMongoDBVersion is the upper, exclusive bound on the
-//versions of MongoDB compatible with RITA
+// MaxMongoDBVersion is the upper, exclusive bound on the
+// versions of MongoDB compatible with RITA
 var MaxMongoDBVersion = semver.Version{
 	Major: 4,
 	Minor: 3,
@@ -29,88 +32,65 @@ var MaxMongoDBVersion = semver.Version{
 
 // DB is the workhorse container for messing with the database
 type DB struct {
-	Session  *mgo.Session
+	Client   *mongo.Client
+	Context  context.Context
 	log      *log.Logger
 	selected string
 }
 
-//NewDB constructs a new DB struct
+// NewDB constructs a new DB struct
 func NewDB(conf *config.Config, log *log.Logger) (*DB, error) {
 	// Jump into the requested database
-	session, err := connectToMongoDB(conf, log)
+	//TODO(fryy): Context?
+	ctx := context.TODO()
+	client, err := connectToMongoDB(ctx, conf, log)
 	if err != nil {
 		return nil, err
 	}
-	session.SetSocketTimeout(conf.S.MongoDB.SocketTimeout)
-	session.SetSyncTimeout(conf.S.MongoDB.SocketTimeout)
-	session.SetCursorTimeout(0)
 
 	return &DB{
-		Session:  session,
+		Client:   client,
+		Context:  ctx,
 		log:      log,
 		selected: "",
 	}, nil
 }
 
-//connectToMongoDB connects to MongoDB possibly with authentication and TLS
-func connectToMongoDB(conf *config.Config, logger *log.Logger) (*mgo.Session, error) {
+// connectToMongoDB connects to MongoDB possibly with authentication and TLS
+func connectToMongoDB(ctx context.Context, conf *config.Config, logger *log.Logger) (*mongo.Client, error) {
 	connString := conf.S.MongoDB.ConnectionString
-	authMechanism := conf.R.MongoDB.AuthMechanismParsed
-	tlsConfig := conf.R.MongoDB.TLS.TLSConfig
+	//authMechanism := conf.R.MongoDB.AuthMechanismParsed
+	//tlsConfig := conf.R.MongoDB.TLS.TLSConfig
 
-	var sess *mgo.Session
+	var client *mongo.Client
 	var err error
-	if conf.S.MongoDB.TLS.Enabled {
-		sess, err = mgosec.Dial(connString, authMechanism, tlsConfig)
-	} else {
-		sess, err = mgosec.DialInsecure(connString, authMechanism)
-	}
+	clientOpts := options.Client().ApplyURI(connString)
+	clientOpts.SetSocketTimeout(conf.S.MongoDB.SocketTimeout)
+	client, err = mongo.Connect(ctx, clientOpts)
+
 	if err != nil {
-		return sess, err
+		return client, err
 	}
 
-	buildInfo, err := sess.BuildInfo()
-	if err != nil {
-		sess.Close()
-		return nil, err
-	}
-
-	semVersion, err := semver.ParseTolerant(buildInfo.Version)
-	if err != nil {
-		sess.Close()
-		return nil, err
-	}
-
-	if !(semVersion.GE(MinMongoDBVersion) && semVersion.LT(MaxMongoDBVersion)) {
-		sess.Close()
-		return nil, fmt.Errorf(
-			"unsupported version of MongoDB. %s not within [%s, %s)",
-			semVersion.String(),
-			MinMongoDBVersion.String(),
-			MaxMongoDBVersion.String(),
-		)
-	}
-
-	return sess, nil
+	fmt.Fprintf(os.Stdout, "End of Connect")
+	return client, nil
 
 }
 
-//SelectDB selects a database for analysis
+// SelectDB selects a database for analysis
 func (d *DB) SelectDB(db string) {
 	d.selected = db
 }
 
-//GetSelectedDB retrieves the currently selected database for analysis
+// GetSelectedDB retrieves the currently selected database for analysis
 func (d *DB) GetSelectedDB() string {
 	return d.selected
 }
 
-//CollectionExists returns true if collection exists in the currently
-//selected database
+// CollectionExists returns true if collection exists in the currently
+// selected database
 func (d *DB) CollectionExists(table string) bool {
-	ssn := d.Session.Copy()
-	defer ssn.Close()
-	coll, err := ssn.DB(d.selected).CollectionNames()
+	coll, err := d.Client.Database(d.selected).ListCollectionNames(d.Context, bson.D{})
 	if err != nil {
 		d.log.WithFields(log.Fields{
 			"error": err.Error(),
@@ -125,62 +105,55 @@ func (d *DB) CollectionExists(table string) bool {
 	return false
 }
 
-//CreateCollection creates a new collection in the currently selected
-//database with the required indexes
-func (d *DB) CreateCollection(name string, indexes []mgo.Index) error {
-	// Make a copy of the current session
-	session := d.Session.Copy()
-	defer session.Close()
+// CreateCollection creates a new collection in the currently selected
+// database with the required indexes
+func (d *DB) CreateCollection(name string, indexes []mongo.IndexModel) error {
+	d.log.Debug("Building collection: ", name, " with ", len(indexes), " indexes")
 
-	d.log.Debug("Building collection: ", name)
-
-	// Create new collection by referencing to it, no need to call Create
-	err := session.DB(d.selected).C(name).Create(
-		&mgo.CollectionInfo{},
-	)
+	err := d.Client.Database(d.selected).CreateCollection(d.Context, name)
 
 	// Make sure it actually got created
 	if err != nil {
 		return err
 	}
 
-	collection := session.DB(d.selected).C(name)
-	for _, index := range indexes {
-		err := collection.EnsureIndex(index)
-		if err != nil {
-			return err
-		}
+	//TODO(fryy): Cursor close at every point
+	//TODO(fryy): Put back in Allow Disk Usage on pipelines.
+	collection := d.Client.Database(d.selected).Collection(name)
+	_, err = collection.Indexes().CreateMany(d.Context, indexes)
+	if err != nil {
+		return err
 	}
-
 	return nil
 }
 
-//AggregateCollection builds a collection via a MongoDB pipeline
-func (d *DB) AggregateCollection(sourceCollection string,
-	session *mgo.Session, pipeline []bson.D) *mgo.Iter {
+// AggregateCollection builds a collection via a MongoDB pipeline
+func (d *DB) AggregateCollection(sourceCollection string, pipeline []bson.D) (*mongo.Cursor, error) {
 
 	// Identify the source collection we will aggregate information from into the new collection
 	if !d.CollectionExists(sourceCollection) {
 		d.log.Warning("Failed aggregation: (Source collection: ",
 			sourceCollection, " doesn't exist)")
-		return nil
+		return nil, fmt.Errorf("Collection doesn't exist")
 	}
-	collection := session.DB(d.selected).C(sourceCollection)
+	collection := d.Client.Database(d.selected).Collection(sourceCollection)
 
 	// Create the pipe
-	pipe := collection.Pipe(pipeline).AllowDiskUse()
-
-	iter := pipe.Iter()
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	pipe, err := collection.Aggregate(d.Context, pipeline, opts)
+	if err != nil {
+		return pipe, err
+	}
 
 	// If error, Throw computer against wall and drink 2 angry beers while
 	// questioning your life, purpose, and relationships.
-	if iter.Err() != nil {
+	if pipe.Err() != nil {
 		d.log.WithFields(log.Fields{
-			"error": iter.Err().Error(),
+			"error": pipe.Err().Error(),
 		}).Error("Failed aggregate operation")
-		return nil
+		return nil, pipe.Err()
 	}
-	return iter
+	return pipe, nil
 }
 
 // MergeBSONMaps recursively merges several bson.M objects into a single map.

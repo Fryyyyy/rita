@@ -6,7 +6,8 @@ import (
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -52,9 +53,6 @@ func (d *dissector) close() {
 func (d *dissector) start() {
 	d.dissectWg.Add(1)
 	go func() {
-		ssn := d.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range d.dissectChannel {
 
 			matchNoStrobeKey := datum.BSONKey()
@@ -177,7 +175,17 @@ func (d *dissector) start() {
 				RespondingIPs []data.UniqueIP `bson:"responding_ips"`
 			}
 
-			_ = ssn.DB(d.db.GetSelectedDB()).C(d.conf.T.Structure.SNIConnTable).Pipe(sniconnFindQuery).AllowDiskUse().One(&res)
+			opts := options.Aggregate().SetAllowDiskUse(true)
+			cursor, err := d.db.Client.Database(d.db.GetSelectedDB()).Collection(d.conf.T.Structure.SNIConnTable).Aggregate(d.db.Context, sniconnFindQuery, opts)
+			if err != nil {
+				return
+			}
+
+			if cursor.Next(d.db.Context) {
+				if err = cursor.Decode(&res); err != nil {
+					panic(err)
+				}
+			}
 
 			// Check for errors and parse results
 			// this is here because it will still return an empty document even if there are no results

@@ -1,12 +1,14 @@
 package host
 
 import (
+	"context"
+
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 
 	"sync"
 )
@@ -54,9 +56,6 @@ func (a *analyzer) close() {
 func (a *analyzer) start() {
 	a.analysisWg.Add(1)
 	go func() {
-		ssn := a.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range a.analysisChannel {
 			if !datum.IP4 { // we currently only handle IPv4 addresses
 				continue
@@ -64,7 +63,7 @@ func (a *analyzer) start() {
 
 			mainUpdate := mainQuery(datum, a.chunk)
 
-			blUpdate, err := blQuery(datum, ssn, a.conf.S.Blacklisted.BlacklistDatabase) // TODO: Move to BL package
+			blUpdate, err := blQuery(a.db.Context, datum, a.db.Client, a.conf.S.Blacklisted.BlacklistDatabase) // TODO: Move to BL package
 			if err != nil {
 				a.log.WithFields(log.Fields{
 					"Module": "host",
@@ -102,9 +101,9 @@ func mainQuery(datum *Input, chunk int) bson.M {
 }
 
 // blQuery marks the given host as blacklisted or not
-func blQuery(datum *Input, ssn *mgo.Session, blDB string) (bson.M, error) {
+func blQuery(ctx context.Context, datum *Input, ssn *mongo.Client, blDB string) (bson.M, error) {
 	// check if blacklisted destination
-	blCount, err := ssn.DB(blDB).C("ip").Find(bson.M{"index": datum.Host.IP}).Count()
+	blCount, err := ssn.Database(blDB).Collection("ip").CountDocuments(ctx, bson.M{"index": datum.Host.IP})
 	blacklisted := blCount > 0
 
 	return bson.M{

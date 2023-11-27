@@ -1,14 +1,17 @@
 package blacklist
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -54,9 +57,6 @@ func (a *analyzer) close() {
 func (a *analyzer) start() {
 	a.analysisWg.Add(1)
 	go func() {
-		ssn := a.db.Session.Copy()
-		defer ssn.Close()
-
 		for blacklistedIP := range a.analysisChannel {
 			blDstUconns, err := a.getUniqueConnsforBLDestination(blacklistedIP)
 			if err != nil {
@@ -74,8 +74,8 @@ func (a *analyzer) start() {
 			}
 
 			for _, blUconnData := range blDstUconns { // update sources which contacted the blacklisted destination
-				blDstForSrcExists, err := blHostRecordExists(
-					ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.Structure.HostTable), blUconnData.Host, blacklistedIP,
+				blDstForSrcExists, err := blHostRecordExists(a.db.Context,
+					a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.Structure.HostTable), blUconnData.Host, blacklistedIP,
 				)
 				if err != nil {
 					a.log.WithFields(log.Fields{
@@ -90,8 +90,8 @@ func (a *analyzer) start() {
 				a.analyzedCallback(database.BulkChanges{a.conf.T.Structure.HostTable: []database.BulkChange{srcHostUpdate}})
 			}
 			for _, blUconnData := range blSrcUconns { // update destinations which were contacted by the blacklisted source
-				blSrcForDstExists, err := blHostRecordExists(
-					ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.Structure.HostTable), blUconnData.Host, blacklistedIP,
+				blSrcForDstExists, err := blHostRecordExists(a.db.Context,
+					a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.Structure.HostTable), blUconnData.Host, blacklistedIP,
 				)
 				if err != nil {
 					a.log.WithFields(log.Fields{
@@ -113,11 +113,11 @@ func (a *analyzer) start() {
 }
 
 // blHostRecordExists checks if a the hostEntryIP has previously been marked as the peer of the given blacklistedIP
-func blHostRecordExists(hostCollection *mgo.Collection, hostEntryIP, blacklistedIP data.UniqueIP) (bool, error) {
+func blHostRecordExists(ctx context.Context, hostCollection *mongo.Collection, hostEntryIP, blacklistedIP data.UniqueIP) (bool, error) {
 	entryKey := hostEntryIP.BSONKey()
 	entryKey["dat"] = bson.M{"$elemMatch": blacklistedIP.PrefixedBSONKey("bl")}
 
-	nExistingEntries, err := hostCollection.Find(entryKey).Count()
+	nExistingEntries, err := hostCollection.CountDocuments(ctx, entryKey)
 
 	return nExistingEntries != 0, err
 }
@@ -211,9 +211,6 @@ func appendBlacklistedSrcQuery(chunk int, blacklistedSrc data.UniqueIP, dstConnD
 // getUniqueConnsforBLDestination returns the IP addresses that contacted a given blacklisted IP along with the number
 // of connections and bytes sent
 func (a *analyzer) getUniqueConnsforBLDestination(blDestinationIP data.UniqueIP) ([]connectionPeer, error) {
-	ssn := a.db.Session.Copy()
-	defer ssn.Close()
-
 	var blIPs []connectionPeer
 
 	blIPQuery := []bson.M{
@@ -245,8 +242,14 @@ func (a *analyzer) getUniqueConnsforBLDestination(blDestinationIP data.UniqueIP)
 		}},
 	}
 
-	err := ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.Structure.UniqueConnTable).Pipe(blIPQuery).AllowDiskUse().All(&blIPs)
-	if err == mgo.ErrNotFound {
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.Structure.UniqueConnTable).Aggregate(a.db.Context, blIPQuery, opts)
+	if err != nil {
+		return blIPs, err
+	}
+	//.AllowDiskUse().All(&blIPs)
+	err = cursor.All(a.db.Context, &blIPs)
+	if err == mongo.ErrNoDocuments {
 		err = nil
 	}
 
@@ -256,9 +259,6 @@ func (a *analyzer) getUniqueConnsforBLDestination(blDestinationIP data.UniqueIP)
 // getUniqueConnsforBLSource returns the IP addresses that a given blacklisted IP contacted along with the number
 // of connections and bytes sent
 func (a *analyzer) getUniqueConnsforBLSource(blSourceIP data.UniqueIP) ([]connectionPeer, error) {
-	ssn := a.db.Session.Copy()
-	defer ssn.Close()
-
 	var blIPs []connectionPeer
 
 	blIPQuery := []bson.M{
@@ -284,7 +284,13 @@ func (a *analyzer) getUniqueConnsforBLSource(blSourceIP data.UniqueIP) ([]connec
 		}},
 	}
 
-	err := ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.Structure.UniqueConnTable).Pipe(blIPQuery).AllowDiskUse().All(&blIPs)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.Structure.UniqueConnTable).Aggregate(a.db.Context, blIPQuery, opts)
+	//.AllowDiskUse().All(&blIPs)
+	if err != nil {
+		return blIPs, err
+	}
+	err = cursor.All(a.db.Context, &blIPs)
 	if err == mgo.ErrNotFound {
 		err = nil
 	}

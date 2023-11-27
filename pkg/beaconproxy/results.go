@@ -2,19 +2,21 @@ package beaconproxy
 
 import (
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-//Results finds beacons FQDN in the database greater than a given cutoffScore
+// Results finds beacons FQDN in the database greater than a given cutoffScore
 func Results(res *resources.Resources, cutoffScore float64) ([]Result, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	var beaconsProxy []Result
 
 	BeaconProxyQuery := bson.M{"score": bson.M{"$gt": cutoffScore}}
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.BeaconProxy.BeaconProxyTable).Find(BeaconProxyQuery).Sort("-score").All(&beaconsProxy)
-
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.BeaconProxy.BeaconProxyTable).Find(res.DB.Context, BeaconProxyQuery)
+	if err != nil {
+		return beaconsProxy, err
+	}
+	options.Find().SetSort(bson.D{{"score", -1}})
+	err = cursor.All(res.DB.Context, &beaconsProxy)
 	return beaconsProxy, err
 }

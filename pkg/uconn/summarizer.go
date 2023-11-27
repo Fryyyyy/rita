@@ -1,14 +1,16 @@
 package uconn
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type (
@@ -54,17 +56,13 @@ func (s *summarizer) close() {
 func (s *summarizer) start() {
 	s.summaryWg.Add(1)
 	go func() {
-
-		ssn := s.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range s.summaryChannel {
-			uconnCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Structure.UniqueConnTable)
-			hostCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Structure.HostTable)
+			uconnCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Structure.UniqueConnTable)
+			hostCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Structure.HostTable)
 
 			hostUpdates := []database.BulkChange{}
 
-			maxTotalDurUpdate, err := maxTotalDurationUpdate(datum, uconnCollection, hostCollection, s.chunk)
+			maxTotalDurUpdate, err := maxTotalDurationUpdate(s.db.Context, datum, uconnCollection, hostCollection, s.chunk)
 			if err != nil {
 				if err != mgo.ErrNotFound {
 					s.log.WithFields(log.Fields{
@@ -78,7 +76,7 @@ func (s *summarizer) start() {
 				hostUpdates = append(hostUpdates, maxTotalDurUpdate)
 			}
 
-			invalidCertUpdates, err := invalidCertUpdates(datum, uconnCollection, hostCollection, s.chunk)
+			invalidCertUpdates, err := invalidCertUpdates(s.db.Context, datum, uconnCollection, hostCollection, s.chunk)
 			if err != nil {
 				s.log.WithFields(log.Fields{
 					"Module": "uconns",
@@ -98,7 +96,7 @@ func (s *summarizer) start() {
 	}()
 }
 
-func maxTotalDurationUpdate(datum data.UniqueIP, uconnColl, hostColl *mgo.Collection, chunk int) (database.BulkChange, error) {
+func maxTotalDurationUpdate(ctx context.Context, datum data.UniqueIP, uconnColl, hostColl *mongo.Collection, chunk int) (database.BulkChange, error) {
 	var maxDurIP struct {
 		Peer        data.UniqueIP `bson:"peer"`
 		MaxTotalDur float64       `bson:"tdur"`
@@ -106,9 +104,15 @@ func maxTotalDurationUpdate(datum data.UniqueIP, uconnColl, hostColl *mgo.Collec
 
 	mdipQuery := maxTotalDurationPipeline(datum)
 
-	err := uconnColl.Pipe(mdipQuery).One(&maxDurIP)
+	cursor, err := uconnColl.Aggregate(ctx, mdipQuery)
+	//.One(&maxDurIP)
 	if err != nil {
 		return database.BulkChange{}, err
+	}
+	if cursor.Next(ctx) {
+		if err = cursor.Decode(&maxDurIP); err != nil {
+			return database.BulkChange{}, err
+		}
 	}
 
 	hostSelector := datum.BSONKey()
@@ -117,7 +121,7 @@ func maxTotalDurationUpdate(datum data.UniqueIP, uconnColl, hostColl *mgo.Collec
 		bson.M{"dat": bson.M{"$elemMatch": bson.M{"mdip": bson.M{"$exists": true}}}},
 	)
 
-	nExistingEntries, err := hostColl.Find(hostWithDatEntrySelector).Count()
+	nExistingEntries, err := hostColl.CountDocuments(ctx, hostWithDatEntrySelector)
 	if err != nil {
 		return database.BulkChange{}, err
 	}
@@ -208,17 +212,24 @@ func maxTotalDurationPipeline(host data.UniqueIP) []bson.M {
 	}
 }
 
-func invalidCertUpdates(datum data.UniqueIP, uconnColl *mgo.Collection, hostColl *mgo.Collection, chunk int) ([]database.BulkChange, error) {
+func invalidCertUpdates(ctx context.Context, datum data.UniqueIP, uconnColl, hostColl *mongo.Collection, chunk int) ([]database.BulkChange, error) {
 
 	var updates []database.BulkChange
 
 	icertQuery := invalidCertPipeline(datum, chunk)
 	var icertPeer data.UniqueIP
-	icertPeerIter := uconnColl.Pipe(icertQuery).Iter()
-	for icertPeerIter.Next(&icertPeer) {
+	icertPeerIter, err := uconnColl.Aggregate(ctx, icertQuery)
+	if err != nil {
+		return updates, err
+	}
+	for icertPeerIter.Next(ctx) {
+		err = icertPeerIter.Decode(&icertPeer)
+		if err != nil {
+			return updates, err
+		}
 		hostEntryExistsSelector := datum.BSONKey()
 		hostEntryExistsSelector["dat"] = bson.M{"$elemMatch": icertPeer.PrefixedBSONKey("icdst")}
-		nExistingEntries, err := hostColl.Find(hostEntryExistsSelector).Count()
+		nExistingEntries, err := hostColl.CountDocuments(ctx, hostEntryExistsSelector)
 		if err != nil {
 			return updates, err
 		}
@@ -249,7 +260,7 @@ func invalidCertUpdates(datum data.UniqueIP, uconnColl *mgo.Collection, hostColl
 			})
 		}
 	}
-	if err := icertPeerIter.Close(); err != nil {
+	if err := icertPeerIter.Close(ctx); err != nil {
 		return updates, err
 	}
 

@@ -4,7 +4,7 @@ import (
 	"github.com/activecm/rita/pkg/data"
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/pkg/uconnproxy"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type (
@@ -28,16 +28,16 @@ type (
 	//Result represents a beacon proxy between a source IP and
 	// an fqdn.
 	Result struct {
-		FQDN           string        `bson:"fqdn"`
-		SrcIP          string        `bson:"src"`
-		SrcNetworkName string        `bson:"src_network_name"`
-		SrcNetworkUUID bson.Binary   `bson:"src_network_uuid"`
-		Connections    int64         `bson:"connection_count"`
-		Ts             TSData        `bson:"ts"`
-		DurScore       float64       `bson:"duration_score"`
-		HistScore      float64       `bson:"hist_score"`
-		Score          float64       `bson:"score"`
-		Proxy          data.UniqueIP `bson:"proxy"`
+		FQDN           string           `bson:"fqdn"`
+		SrcIP          string           `bson:"src"`
+		SrcNetworkName string           `bson:"src_network_name"`
+		SrcNetworkUUID primitive.Binary `bson:"src_network_uuid"`
+		Connections    int64            `bson:"connection_count"`
+		Ts             TSData           `bson:"ts"`
+		DurScore       float64          `bson:"duration_score"`
+		HistScore      float64          `bson:"hist_score"`
+		Score          float64          `bson:"score"`
+		Proxy          data.UniqueIP    `bson:"proxy"`
 	}
 
 	//StrobeResult represents a unique connection with a large amount

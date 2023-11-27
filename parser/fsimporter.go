@@ -29,9 +29,10 @@ import (
 	"github.com/activecm/rita/resources"
 	"github.com/activecm/rita/util"
 
-	"github.com/globalsign/mgo/bson"
 	"github.com/pbnjay/memory"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -651,14 +652,11 @@ func (fs *FSImporter) buildUserAgent(useragentMap map[string]*useragent.Input, h
 }
 
 func (fs *FSImporter) updateTimestampRange() (int64, int64) {
-	session := fs.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := fs.config.T.Structure.UniqueConnTable
 
 	// check if collection already exists
-	names, _ := session.DB(fs.database.GetSelectedDB()).CollectionNames()
+	names, _ := fs.database.Client.Database(fs.database.GetSelectedDB()).ListCollectionNames(fs.database.Context, bson.D{})
 
 	exists := false
 	// make sure collection exists
@@ -691,15 +689,23 @@ func (fs *FSImporter) updateTimestampRange() (int64, int64) {
 		Timestamp int64 `bson:"ts"`
 	}
 
-	// get iminimum timestamp
+	// get minimum timestamp
 	// sort by the timestamp, limit it to 1 (only returns first result)
-	err := session.DB(fs.database.GetSelectedDB()).C(collectionName).Pipe(timestampMinQuery).AllowDiskUse().One(&resultMin)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := fs.database.Client.Database(fs.database.GetSelectedDB()).Collection(collectionName).Aggregate(fs.database.Context, timestampMinQuery, opts)
+	//AllowDiskUse().One(&resultMin)
 
 	if err != nil {
 		fs.log.WithFields(log.Fields{
 			"error": err.Error(),
 		}).Error("Could not retrieve minimum timestamp:", err)
 		return 0, 0
+	}
+
+	if cursor.Next(fs.database.Context) {
+		if err = cursor.Decode(&resultMin); err != nil {
+			panic(err)
+		}
 	}
 
 	// Build query for aggregation
@@ -722,13 +728,20 @@ func (fs *FSImporter) updateTimestampRange() (int64, int64) {
 
 	// get max timestamp
 	// sort by the timestamp, limit it to 1 (only returns first result)
-	err = session.DB(fs.database.GetSelectedDB()).C(collectionName).Pipe(timestampMaxQuery).AllowDiskUse().One(&resultMax)
+	opts = options.Aggregate().SetAllowDiskUse(true)
+	cursor, err = fs.database.Client.Database(fs.database.GetSelectedDB()).Collection(collectionName).Aggregate(fs.database.Context, timestampMaxQuery, opts)
 
 	if err != nil {
 		fs.log.WithFields(log.Fields{
 			"error": err.Error(),
 		}).Error("Could not retrieve maximum timestamp:", err)
 		return 0, 0
+	}
+
+	if cursor.Next(fs.database.Context) {
+		if err = cursor.Decode(&resultMax); err != nil {
+			panic(err)
+		}
 	}
 
 	// since zeek records connections when they close, some connections that started before the ingested

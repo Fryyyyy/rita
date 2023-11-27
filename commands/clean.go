@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
 	"github.com/urfave/cli"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 func init() {
@@ -43,9 +43,9 @@ func cleanDatabase(c *cli.Context) error {
 		res.Config.T.Cert.CertificateTable:          "Certificate Analysis",
 	}
 
-	session := res.DB.Session.Copy()
+	session := res.DB.Client
 
-	allDBs, err := session.DatabaseNames()
+	allDBs, err := session.ListDatabaseNames(res.DB.Context, bson.D{})
 
 	if err != nil {
 		fmt.Print("Clean failed: Failed to fetch database list.\n")
@@ -66,7 +66,7 @@ func cleanDatabase(c *cli.Context) error {
 			continue
 		}
 
-		collections, err := session.DB(db).CollectionNames()
+		collections, err := session.Database(db).ListCollectionNames(res.DB.Context, bson.D{})
 		if err != nil {
 			fmt.Print("Clean failed: Failed to fetch collection list.\n")
 			return cli.NewExitError(err.Error(), -1)
@@ -102,10 +102,10 @@ func cleanDatabase(c *cli.Context) error {
 			IndexSize int64 `bson:"indexSize"`
 		}
 
-		err = session.DB(matchingDB).Run(bson.D{
-			{Name: "dbStats", Value: 1},
-			{Name: "scale", Value: 1024 * 1024},
-		}, &dbSize)
+		err = session.Database(matchingDB).RunCommand(res.DB.Context, bson.D{
+			{"dbStats", 1},
+			{"scale", 1024 * 1024},
+		}).Decode(&dbSize)
 
 		if err != nil {
 			fmt.Print("Clean failed: Failed to gather size of dataset\n")
@@ -119,7 +119,7 @@ func cleanDatabase(c *cli.Context) error {
 		}
 
 		if force || confirmAction("\t [?] Confirm we'll be deleting "+matchingDB) {
-			err = session.DB(matchingDB).DropDatabase()
+			err = session.Database(matchingDB).Drop(res.DB.Context)
 			if err != nil {
 				fmt.Print("Clean failed: Failed to delete dataset\n")
 				return cli.NewExitError(err.Error(), -1)

@@ -7,8 +7,9 @@ import (
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type (
@@ -55,14 +56,11 @@ func (s *summarizer) start() {
 	s.summaryWg.Add(1)
 	go func() {
 
-		ssn := s.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range s.summaryChannel {
-			beaconCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Beacon.BeaconTable)
-			hostCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Structure.HostTable)
+			beaconCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Beacon.BeaconTable)
+			hostCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Structure.HostTable)
 
-			maxBeaconSelector, maxBeaconQuery, err := maxBeaconUpdate(datum, beaconCollection, hostCollection, s.chunk)
+			maxBeaconSelector, maxBeaconQuery, err := maxBeaconUpdate(s.db, datum, beaconCollection, hostCollection, s.chunk)
 			if err != nil {
 				if err != mgo.ErrNotFound {
 					s.log.WithFields(log.Fields{
@@ -88,7 +86,7 @@ func (s *summarizer) start() {
 }
 
 // maxBeaconUpdate finds the highest scoring beacon from this import session for a particular host
-func maxBeaconUpdate(datum data.UniqueIP, beaconColl, hostColl *mgo.Collection, chunk int) (bson.M, bson.M, error) {
+func maxBeaconUpdate(db *database.DB, datum data.UniqueIP, beaconColl, hostColl *mongo.Collection, chunk int) (bson.M, bson.M, error) {
 
 	var maxBeaconIP struct {
 		Dst   data.UniqueIP `bson:"dst"`
@@ -96,9 +94,15 @@ func maxBeaconUpdate(datum data.UniqueIP, beaconColl, hostColl *mgo.Collection, 
 	}
 
 	mbdstQuery := maxBeaconPipeline(datum)
-	err := beaconColl.Pipe(mbdstQuery).One(&maxBeaconIP)
+	cursor, err := beaconColl.Aggregate(db.Context, mbdstQuery)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if cursor.Next(db.Context) {
+		if err = cursor.Decode(&maxBeaconIP); err != nil {
+			panic(err)
+		}
 	}
 
 	hostSelector := datum.BSONKey()
@@ -107,7 +111,7 @@ func maxBeaconUpdate(datum data.UniqueIP, beaconColl, hostColl *mgo.Collection, 
 		bson.M{"dat": bson.M{"$elemMatch": bson.M{"mbdst.ip": bson.M{"$exists": true}}}},
 	)
 
-	nExistingEntries, err := hostColl.Find(hostWithDatEntrySelector).Count()
+	nExistingEntries, err := hostColl.CountDocuments(db.Context, hostWithDatEntrySelector)
 	if err != nil {
 		return nil, nil, err
 	}

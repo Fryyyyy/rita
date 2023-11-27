@@ -2,17 +2,15 @@ package useragent
 
 import (
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-//Results returns useragents sorted by how many times each useragent was
-//seen in the dataset. sortDirection controls where the useragents are
-//sorted in descending (sortDirection=-1) or ascending order (sortDirection=1).
-//limit and noLimit control how many results are returned.
+// Results returns useragents sorted by how many times each useragent was
+// seen in the dataset. sortDirection controls where the useragents are
+// sorted in descending (sortDirection=-1) or ascending order (sortDirection=1).
+// limit and noLimit control how many results are returned.
 func Results(res *resources.Resources, sortDirection, limit int, noLimit bool) ([]Result, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	var useragentResults []Result
 
 	useragentQuery := []bson.M{
@@ -34,8 +32,12 @@ func Results(res *resources.Resources, sortDirection, limit int, noLimit bool) (
 		useragentQuery = append(useragentQuery, bson.M{"$limit": limit})
 	}
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.UserAgent.UserAgentTable).Pipe(useragentQuery).AllowDiskUse().All(&useragentResults)
-
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.UserAgent.UserAgentTable).Aggregate(res.DB.Context, useragentQuery, opts)
+	if err != nil {
+		return useragentResults, err
+	}
+	err = cursor.All(res.DB.Context, &useragentResults)
 	return useragentResults, err
 
 }

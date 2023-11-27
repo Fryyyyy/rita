@@ -1,14 +1,16 @@
 package uconn
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -56,10 +58,7 @@ func (a *analyzer) close() {
 func (a *analyzer) start() {
 	a.analysisWg.Add(1)
 	go func() {
-		ssn := a.db.Session.Copy()
-		defer ssn.Close()
-
-		uconnColl := ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.Structure.UniqueConnTable)
+		uconnColl := a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.Structure.UniqueConnTable)
 
 		for datum := range a.analysisChannel {
 
@@ -76,7 +75,7 @@ func (a *analyzer) start() {
 			// statistics together with the statistics for the current chunk of imports and the
 			// the open connection statistics. Then, the rollUpQuery formats an update to the
 			// top-level connection statistics fields in the unique connection doc.
-			rollUpUpdate, err := rollUpQuery(datum, openCount, openTBytes, openDur, uconnColl)
+			rollUpUpdate, err := rollUpQuery(a.db.Context, datum, openCount, openTBytes, openDur, uconnColl)
 			if err != nil {
 				a.log.WithFields(log.Fields{
 					"Module": "host",
@@ -200,7 +199,7 @@ func openConnectionsQuery(datum *Input) (query bson.M, connCount, totalBytes int
 }
 
 // rollUpQuery updates the top level summary fields which aggregate over rhe chunked fields
-func rollUpQuery(datum *Input, openCount, openTotalBytes int64, openDuration float64, uconnColl *mgo.Collection) (bson.M, error) {
+func rollUpQuery(ctx context.Context, datum *Input, openCount, openTotalBytes int64, openDuration float64, uconnColl *mongo.Collection) (bson.M, error) {
 	//existingQuery gathers the previously existing summary details for the connection pair
 	existingQuery := []bson.M{
 		{"$match": datum.Hosts.BSONKey()},
@@ -253,8 +252,13 @@ func rollUpQuery(datum *Input, openCount, openTotalBytes int64, openDuration flo
 		TotalDuration float64  `bson:"tdur"`
 	}
 	var rollUpRes rollUpResult
-	err := uconnColl.Pipe(existingQuery).AllowDiskUse().One(&rollUpRes)
-	if err != nil && err != mgo.ErrNotFound {
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := uconnColl.Aggregate(ctx, existingQuery, opts)
+	if err != nil {
+		return bson.M{}, err
+	}
+	err = cursor.All(ctx, &rollUpRes)
+	if err != nil {
 		return bson.M{}, err
 	}
 

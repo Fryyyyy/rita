@@ -6,10 +6,12 @@ import (
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/util"
-	"github.com/globalsign/mgo"
 	log "github.com/sirupsen/logrus"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type repo struct {
@@ -29,14 +31,11 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes creates indexes for the uconnProxy collection
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := r.config.T.Structure.UniqueConnProxyTable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -45,11 +44,31 @@ func (r *repo) CreateIndexes() error {
 		}
 	}
 
-	indexes := []mgo.Index{
-		{Key: []string{"src", "fqdn", "src_network_uuid"}, Unique: true},
-		{Key: []string{"fqdn"}},
-		{Key: []string{"src", "src_network_uuid"}},
-		{Key: []string{"dat.count"}},
+	indexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "src", Value: 1},
+				{Key: "fqdn", Value: 1},
+				{Key: "src_network_uuid", Value: 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{Key: "fqdn", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "src", Value: 1},
+				{Key: "src_network_uuid", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "dat.count", Value: 1},
+			},
+		},
 	}
 
 	// create collection

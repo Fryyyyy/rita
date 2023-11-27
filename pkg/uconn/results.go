@@ -2,16 +2,14 @@ package uconn
 
 import (
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // LongConnResults returns long connections longer than the given thresh in
 // seconds. The results will be sorted, descending by duration.
 // limit and noLimit control how many results are returned.
 func LongConnResults(res *resources.Resources, thresh int, limit int, noLimit bool) ([]LongConnResult, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	var longConnResults []LongConnResult
 
 	longConnQuery := []bson.M{
@@ -69,8 +67,13 @@ func LongConnResults(res *resources.Resources, thresh int, limit int, noLimit bo
 		longConnQuery = append(longConnQuery, bson.M{"$limit": limit})
 	}
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.Structure.UniqueConnTable).Pipe(longConnQuery).AllowDiskUse().All(&longConnResults)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.Structure.UniqueConnTable).Aggregate(res.DB.Context, longConnQuery, opts)
+	if err != nil {
+		return longConnResults, err
+	}
 
+	err = cursor.All(res.DB.Context, &longConnResults)
 	return longConnResults, err
 
 }
@@ -78,9 +81,6 @@ func LongConnResults(res *resources.Resources, thresh int, limit int, noLimit bo
 // OpenConnResults returns open connections. The results will be sorted, descending by duration.
 // limit and noLimit control how many results are returned.
 func OpenConnResults(res *resources.Resources, thresh int, limit int, noLimit bool) ([]OpenConnResult, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	var openConnResults []OpenConnResult
 
 	openConnQuery := []bson.M{
@@ -118,7 +118,13 @@ func OpenConnResults(res *resources.Resources, thresh int, limit int, noLimit bo
 		openConnQuery = append(openConnQuery, bson.M{"$limit": limit})
 	}
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.Structure.UniqueConnTable).Pipe(openConnQuery).AllowDiskUse().All(&openConnResults)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.Structure.UniqueConnTable).Aggregate(res.DB.Context, openConnQuery, opts)
+	if err != nil {
+		return openConnResults, err
+	}
+
+	err = cursor.All(res.DB.Context, &openConnResults)
 
 	return openConnResults, err
 

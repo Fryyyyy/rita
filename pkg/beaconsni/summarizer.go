@@ -1,14 +1,16 @@
 package beaconsni
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type (
@@ -54,15 +56,11 @@ func (s *summarizer) close() {
 func (s *summarizer) start() {
 	s.summaryWg.Add(1)
 	go func() {
-
-		ssn := s.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range s.summaryChannel {
-			beaconSNICollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.BeaconSNI.BeaconSNITable)
-			hostCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Structure.HostTable)
+			beaconSNICollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.BeaconSNI.BeaconSNITable)
+			hostCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Structure.HostTable)
 
-			maxSNIBeaconSelector, maxSNIBeaconQuery, err := maxSNIBeaconUpdate(
+			maxSNIBeaconSelector, maxSNIBeaconQuery, err := maxSNIBeaconUpdate(s.db.Context,
 				datum, beaconSNICollection, hostCollection, s.chunk,
 			)
 			if err != nil {
@@ -90,7 +88,7 @@ func (s *summarizer) start() {
 }
 
 // maxSNIBeaconUpdate finds the highest scoring sni beacon from this import session for a particular host
-func maxSNIBeaconUpdate(datum data.UniqueIP, beaconSNIColl, hostColl *mgo.Collection, chunk int) (bson.M, bson.M, error) {
+func maxSNIBeaconUpdate(ctx context.Context, datum data.UniqueIP, beaconSNIColl, hostColl *mongo.Collection, chunk int) (bson.M, bson.M, error) {
 
 	var maxBeaconSNI struct {
 		Fqdn  string  `bson:"fqdn"`
@@ -98,9 +96,15 @@ func maxSNIBeaconUpdate(datum data.UniqueIP, beaconSNIColl, hostColl *mgo.Collec
 	}
 
 	mbdstQuery := maxSNIBeaconPipeline(datum)
-	err := beaconSNIColl.Pipe(mbdstQuery).One(&maxBeaconSNI)
+	cursor, err := beaconSNIColl.Aggregate(ctx, mbdstQuery)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if cursor.Next(ctx) {
+		if err = cursor.Decode(&maxBeaconSNI); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	hostSelector := datum.BSONKey()
@@ -109,7 +113,7 @@ func maxSNIBeaconUpdate(datum data.UniqueIP, beaconSNIColl, hostColl *mgo.Collec
 		bson.M{"dat": bson.M{"$elemMatch": bson.M{"mbsni": bson.M{"$exists": true}}}},
 	)
 
-	nExistingEntries, err := hostColl.Find(hostWithDatEntrySelector).Count()
+	nExistingEntries, err := hostColl.CountDocuments(ctx, hostWithDatEntrySelector)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -10,8 +10,10 @@ import (
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/pkg/uconn"
 	"github.com/activecm/rita/util"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/globalsign/mgo"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 
@@ -34,14 +36,11 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 }
 
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := r.config.T.Beacon.BeaconTable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -51,12 +50,38 @@ func (r *repo) CreateIndexes() error {
 	}
 
 	// set desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"-score"}},
-		{Key: []string{"src", "dst", "src_network_uuid", "dst_network_uuid"}, Unique: true},
-		{Key: []string{"src", "src_network_uuid"}},
-		{Key: []string{"dst", "dst_network_uuid"}},
-		{Key: []string{"-connection_count"}},
+	indexes := []mongo.IndexModel{
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "score", Value: -1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "src", Value: 1},
+				{Key: "dst", Value: 1},
+				{Key: "src_network_uuid", Value: 1},
+				{Key: "dst_network_uuid", Value: 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "src", Value: 1},
+				{Key: "src_network_uuid", Value: 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "dst", Value: 1},
+				{Key: "dst_network_uuid", Value: 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "connection_count", Value: -1},
+			},
+		},
 	}
 
 	// create collection

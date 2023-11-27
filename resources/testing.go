@@ -6,15 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/activecm/mgorus"
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 )
 
-//InitIntegrationTestingResources creates a default testing
-//resource bundle for use with integration testing.
-//The MongoDB server is contacted via the URI provided
-//as by go test -args [MongoDB URI].
+// InitIntegrationTestingResources creates a default testing
+// resource bundle for use with integration testing.
+// The MongoDB server is contacted via the URI provided
+// as by go test -args [MongoDB URI].
 func InitIntegrationTestingResources(t *testing.T) *Resources {
 	if testing.Short() {
 		t.Skip()
@@ -41,16 +40,17 @@ func InitIntegrationTestingResources(t *testing.T) *Resources {
 	}
 
 	// Allows code to create and remove tracked databases
-	metaDB := database.NewMetaDB(conf, db.Session, log)
+	metaDB := database.NewMetaDB(db.Context, conf, db.Client, log)
 
 	//Begin logging to the metadatabase
-	if conf.S.Log.LogToDB {
+	//TODO(fryy): logging?
+	/*if conf.S.Log.LogToDB {
 		log.Hooks.Add(
 			mgorus.NewHookerFromSession(
 				db.Session, conf.S.MongoDB.MetaDB, conf.T.Log.RitaLogTable,
 			),
 		)
-	}
+	}*/
 
 	//bundle up the system resources
 	r := &Resources{
@@ -62,8 +62,8 @@ func InitIntegrationTestingResources(t *testing.T) *Resources {
 	return r
 }
 
-//InitTestResources creates a default testing
-//resource bundle for use with integration testing.
+// InitTestResources creates a default testing
+// resource bundle for use with integration testing.
 func InitTestResources() *Resources {
 
 	conf, err := config.LoadTestingConfig("mongodb://localhost:27017")
@@ -83,16 +83,17 @@ func InitTestResources() *Resources {
 	}
 
 	// Allows code to create and remove tracked databases
-	metaDB := database.NewMetaDB(conf, db.Session, log)
+	metaDB := database.NewMetaDB(db.Context, conf, db.Client, log)
 
 	//Begin logging to the metadatabase
-	if conf.S.Log.LogToDB {
+	//TODO(fryy): Logging?
+	/*if conf.S.Log.LogToDB {
 		log.Hooks.Add(
 			mgorus.NewHookerFromSession(
 				db.Session, conf.S.MongoDB.MetaDB, conf.T.Log.RitaLogTable,
 			),
 		)
-	}
+	}*/
 
 	//bundle up the system resources
 	r := &Resources{

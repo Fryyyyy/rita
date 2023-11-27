@@ -9,8 +9,10 @@ import (
 	"github.com/activecm/rita/pkg/data"
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/util"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/globalsign/mgo"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 
@@ -34,14 +36,12 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes creates indexes for the useragent collection
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
 
 	// set collection name
 	collectionName := r.config.T.UserAgent.UserAgentTable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -51,10 +51,24 @@ func (r *repo) CreateIndexes() error {
 	}
 
 	// set desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"user_agent"}, Unique: true},
-		{Key: []string{"dat.seen"}},
-		{Key: []string{"dat.orig_ips.ip", "dat.orig_ips.network_uuid"}},
+	indexes := []mongo.IndexModel{
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "user_agent", Value: 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "dat.seen", Value: 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{Key: "dat.orig_ips.ip", Value: 1},
+				{Key: "dat.orig_ips.network_uuid", Value: 1},
+			},
+		},
 	}
 
 	// create collection

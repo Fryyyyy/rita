@@ -7,7 +7,7 @@ import (
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type (
@@ -53,14 +53,12 @@ func (a *analyzer) close() {
 func (a *analyzer) start() {
 	a.analysisWg.Add(1)
 	go func() {
-		ssn := a.db.Session.Copy()
-		defer ssn.Close()
 		for data := range a.analysisChannel {
 
 			// check if this query string has already been parsed to add to the subdomain count by checking
 			// if the whole string is already in the hostname table.
-			nHostnameEntries, _ := ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.DNS.HostnamesTable).
-				Find(bson.M{"host": data.name}).Count()
+			nHostnameEntries, _ := a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.DNS.HostnamesTable).
+				CountDocuments(a.db.Context, bson.M{"host": data.name})
 
 			// flag to keep track of whether we need to increment the subs count
 			alreadyCountedSubsFlag := false
@@ -91,8 +89,12 @@ func (a *analyzer) start() {
 
 				var existingEntries []dns
 
-				_ = ssn.DB(a.db.GetSelectedDB()).C(a.conf.T.DNS.ExplodedDNSTable).
-					Find(bson.M{"domain": entry}).All(&existingEntries)
+				cursor, err := a.db.Client.Database(a.db.GetSelectedDB()).Collection(a.conf.T.DNS.ExplodedDNSTable).
+					Find(a.db.Context, bson.M{"domain": entry})
+				if err != nil {
+					panic(err)
+				}
+				err = cursor.All(a.db.Context, &existingEntries)
 
 				// if this is a brand NEW domain string and isn't in the exploded dns table:
 				if len(existingEntries) <= 0 {

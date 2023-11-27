@@ -1,12 +1,14 @@
 package database
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -17,6 +19,7 @@ type (
 		Upsert    bool        // Whether to insert in case the document isn't found
 		Remove    bool        // Whether to remove the document found rather than updating
 		SelectAll bool        // Whether to use RemoveAll/ UpdateAll
+		ctx       context.Context
 	}
 
 	// BulkChanges is a map of collections to the changes that should be applied to each one
@@ -46,12 +49,12 @@ func (m BulkChange) Size(buffer []byte) ([]byte, int) {
 	}
 
 	if m.Selector != nil {
-		buffer, _ = bson.MarshalBuffer(m.Selector, buffer)
+		buffer, _ = bson.Marshal(m.Selector)
 		size += len(buffer)
 		buffer = buffer[:0]
 	}
 	if m.Update != nil {
-		buffer, _ = bson.MarshalBuffer(m.Update, buffer)
+		buffer, _ = bson.Marshal(m.Update)
 		size += len(buffer)
 		buffer = buffer[:0]
 	}
@@ -59,21 +62,23 @@ func (m BulkChange) Size(buffer []byte) ([]byte, int) {
 }
 
 // Apply adds the change described to a bulk buffer
-func (m BulkChange) Apply(bulk *mgo.Bulk) {
+func (m BulkChange) Apply(bulk *mongo.Collection) {
 	if m.Selector == nil {
 		return // can't describe a change without a selector
 	}
 
 	if m.Remove && m.SelectAll {
-		bulk.RemoveAll(m.Selector)
+		bulk.DeleteMany(m.ctx, m.Selector)
 	} else if m.Remove /*&& !m.SelectAll*/ {
-		bulk.Remove(m.Selector)
+		bulk.DeleteOne(m.ctx, m.Selector)
 	} else if m.Update != nil && m.Upsert {
-		bulk.Upsert(m.Selector, m.Update)
+		opts := options.Update().SetUpsert(true)
+		bulk.UpdateOne(m.ctx, m.Selector, m.Update, opts)
 	} else if m.Update != nil && m.SelectAll {
-		bulk.UpdateAll(m.Selector, m.Update)
+		opts := options.Update().SetUpsert(true)
+		bulk.UpdateMany(m.ctx, m.Selector, m.Update, opts)
 	} else if m.Update != nil /*&& !m.Upsert && !m.SelectAll*/ {
-		bulk.Update(m.Selector, m.Update)
+		bulk.UpdateOne(m.ctx, m.Selector, m.Update)
 	}
 }
 
@@ -109,14 +114,11 @@ func (w *MgoBulkWriter) Close() {
 func (w *MgoBulkWriter) Start() {
 	w.writeWg.Add(1)
 	go func() {
-		ssn := w.db.Session.Copy()
-		defer ssn.Close()
-
-		bulkBuffers := map[string]*mgo.Bulk{} // stores a mgo.Bulk buffer for each collection
-		bulkBufferSizes := map[string]int{}   // stores the size in bytes of the BSON documents in each mgo.Bulk buffer
-		bulkBufferLengths := map[string]int{} // stores the number of changes stored in each mgo.Bulk buffer
-		var sizeBuffer []byte                 // used (and re-used) for BSON serialization in order to calculate the size of each BSON doc
-		var changeSize int                    // holds the total size of each BSON serialized change before being added to bulkBufferSizes
+		bulkBuffers := map[string]*mongo.Collection{} // stores a mgo.Bulk buffer for each collection
+		bulkBufferSizes := map[string]int{}           // stores the size in bytes of the BSON documents in each mgo.Bulk buffer
+		bulkBufferLengths := map[string]int{}         // stores the number of changes stored in each mgo.Bulk buffer
+		var sizeBuffer []byte                         // used (and re-used) for BSON serialization in order to calculate the size of each BSON doc
+		var changeSize int                            // holds the total size of each BSON serialized change before being added to bulkBufferSizes
 
 		for data := range w.writeChannel { // process data as it streams into the writer
 			for tgtColl, bulkChanges := range data { // loop through each collection that needs updated
@@ -124,11 +126,12 @@ func (w *MgoBulkWriter) Start() {
 				// initialize/ grab the bulk buffer associated with this collection
 				bulkBuffer, bufferExists := bulkBuffers[tgtColl]
 				if !bufferExists {
-					bulkBuffer = ssn.DB(w.db.GetSelectedDB()).C(tgtColl).Bulk()
-					if w.unordered {
+					bulkBuffer = w.db.Client.Database(w.db.GetSelectedDB()).Collection(tgtColl)
+					//TODO(fryy): Bulk writes ?
+					/*if w.unordered {
 						// if the order in which the updates occur doesn't matter, allow MongoDB to apply the updates in parallel
 						bulkBuffer.Unordered()
-					}
+					}*/
 					bulkBuffers[tgtColl] = bulkBuffer
 				}
 
@@ -139,14 +142,14 @@ func (w *MgoBulkWriter) Start() {
 					// if the total size of the bulk buffer would exceed the max size after inserting the current change
 					// run the existing bulk buffer against MongoDB
 					if bulkBufferLengths[tgtColl] >= w.maxBulkCount || bulkBufferSizes[tgtColl]+changeSize >= w.maxBulkSize {
-						info, err := bulkBuffer.Run()
+						/*info, err := bulkBuffer.Run()
 						if err != nil {
 							w.log.WithFields(log.Fields{
 								"Module":     w.writerName,
 								"Collection": tgtColl,
 								"Info":       info,
 							}).Error(err)
-						}
+						}*/
 						// make sure to reset the stats we are tracking about the bulk buffer
 						bulkBufferLengths[tgtColl] = 0
 						bulkBufferSizes[tgtColl] = 0
@@ -161,15 +164,15 @@ func (w *MgoBulkWriter) Start() {
 		}
 
 		// after the writer is done receiving inputs, make sure to drain all of the buffers before exiting
-		for tgtColl, bulkBuffer := range bulkBuffers {
-			info, err := bulkBuffer.Run()
+		for tgtColl, _ := range bulkBuffers {
+			/*info, err := bulkBuffer.Run()
 			if err != nil {
 				w.log.WithFields(log.Fields{
 					"Module":     w.writerName,
 					"Collection": tgtColl,
 					"Info":       info,
 				}).Error(err)
-			}
+			}*/
 
 			bulkBufferLengths[tgtColl] = 0
 			bulkBufferSizes[tgtColl] = 0

@@ -2,14 +2,13 @@ package explodeddns
 
 import (
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-//Results returns hostnames and their subdomain/ lookup statistics from the database.
-//limit and noLimit control how many results are returned.
+// Results returns hostnames and their subdomain/ lookup statistics from the database.
+// limit and noLimit control how many results are returned.
 func Results(res *resources.Resources, limit int, noLimit bool) ([]Result, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
 
 	var explodedDNSResults []Result
 
@@ -35,8 +34,12 @@ func Results(res *resources.Resources, limit int, noLimit bool) ([]Result, error
 		explodedDNSQuery = append(explodedDNSQuery, bson.M{"$limit": limit})
 	}
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.DNS.ExplodedDNSTable).Pipe(explodedDNSQuery).AllowDiskUse().All(&explodedDNSResults)
-
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.DNS.ExplodedDNSTable).Aggregate(res.DB.Context, explodedDNSQuery, opts)
+	if err != nil {
+		return explodedDNSResults, err
+	}
+	cursor.All(res.DB.Context, &explodedDNSResults)
 	return explodedDNSResults, err
 
 }

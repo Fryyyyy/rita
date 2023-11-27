@@ -3,10 +3,10 @@ package data
 import (
 	"strings"
 
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
-//UniqueSrcFQDNPair is used to make a tuple of
+// UniqueSrcFQDNPair is used to make a tuple of
 // Src IP/UUID/Name and an FQDN to which the Src IP
 // was attempting to communicate
 type UniqueSrcFQDNPair struct {
@@ -14,7 +14,7 @@ type UniqueSrcFQDNPair struct {
 	FQDN        string `bson:"fqdn"`
 }
 
-//NewUniqueSrcFQDNPair binds a pair of UniqueIPs and an FQDN
+// NewUniqueSrcFQDNPair binds a pair of UniqueIPs and an FQDN
 func NewUniqueSrcFQDNPair(source UniqueIP, fqdn string) UniqueSrcFQDNPair {
 	return UniqueSrcFQDNPair{
 		UniqueSrcIP: UniqueSrcIP{
@@ -26,7 +26,7 @@ func NewUniqueSrcFQDNPair(source UniqueIP, fqdn string) UniqueSrcFQDNPair {
 	}
 }
 
-//MapKey generates a string which may be used to index a Unique SrcIP / FQDN pair. Concatenates IPs and UUIDs.
+// MapKey generates a string which may be used to index a Unique SrcIP / FQDN pair. Concatenates IPs and UUIDs.
 func (p UniqueSrcFQDNPair) MapKey() string {
 	var builder strings.Builder
 
@@ -34,7 +34,7 @@ func (p UniqueSrcFQDNPair) MapKey() string {
 
 	builder.Grow(len(p.SrcIP) + srcUUIDLen + len(p.FQDN))
 	builder.WriteString(p.SrcIP)
-	builder.WriteByte(p.SrcNetworkUUID.Kind)
+	builder.WriteByte(p.SrcNetworkUUID.Subtype)
 	builder.Write(p.SrcNetworkUUID.Data)
 
 	builder.WriteString(p.FQDN)
@@ -42,7 +42,7 @@ func (p UniqueSrcFQDNPair) MapKey() string {
 	return builder.String()
 }
 
-//BSONKey generates a BSON map which may be used to index a given a unique
+// BSONKey generates a BSON map which may be used to index a given a unique
 // src-fqdn pair. Includes IP and Network UUID.
 func (p UniqueSrcFQDNPair) BSONKey() bson.M {
 	key := bson.M{

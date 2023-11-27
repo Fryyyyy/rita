@@ -3,13 +3,12 @@ package hostname
 import (
 	"github.com/activecm/rita/pkg/data"
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // IPResults returns the IP addresses the hostname was seen resolving to in the dataset
 func IPResults(res *resources.Resources, hostname string) ([]data.UniqueIP, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
 
 	ipsForHostnameQuery := []bson.M{
 		{"$match": bson.M{
@@ -39,15 +38,17 @@ func IPResults(res *resources.Resources, hostname string) ([]data.UniqueIP, erro
 	}
 
 	var ipResults []data.UniqueIP
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.DNS.HostnamesTable).Pipe(ipsForHostnameQuery).AllowDiskUse().All(&ipResults)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.DNS.HostnamesTable).Aggregate(res.DB.Context, ipsForHostnameQuery, opts)
+	if err != nil {
+		return ipResults, err
+	}
+	err = cursor.All(res.DB.Context, &ipResults)
 	return ipResults, err
 }
 
 // FQDNResults returns the FQDNs the IP address was seen resolving to in the dataset
 func FQDNResults(res *resources.Resources, hostIP string) ([]*FQDNResult, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	fqdnsForHostnameQuery := []bson.M{
 		{"$match": bson.M{
 			"dat.ips.ip": hostIP,
@@ -55,10 +56,14 @@ func FQDNResults(res *resources.Resources, hostIP string) ([]*FQDNResult, error)
 		{"$group": bson.M{
 			"_id": "$host",
 		}},
-		
 	}
 
 	var fqdnResults []*FQDNResult
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.DNS.HostnamesTable).Pipe(fqdnsForHostnameQuery).AllowDiskUse().All(&fqdnResults)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.DNS.HostnamesTable).Aggregate(res.DB.Context, fqdnsForHostnameQuery, opts)
+	if err != nil {
+		return fqdnResults, err
+	}
+	err = cursor.All(res.DB.Context, &fqdnResults)
 	return fqdnResults, err
 }

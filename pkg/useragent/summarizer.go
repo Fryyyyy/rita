@@ -1,14 +1,17 @@
 package useragent
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type (
@@ -55,14 +58,11 @@ func (s *summarizer) start() {
 	s.summaryWg.Add(1)
 	go func() {
 
-		ssn := s.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range s.summaryChannel {
-			useragentCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.UserAgent.UserAgentTable)
-			hostCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Structure.HostTable)
+			useragentCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.UserAgent.UserAgentTable)
+			hostCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Structure.HostTable)
 
-			rareSignatures, err := getRareSignaturesForIP(useragentCollection, datum, s.chunk)
+			rareSignatures, err := getRareSignaturesForIP(s.db.Context, useragentCollection, datum, s.chunk)
 			if err != nil {
 				s.log.WithFields(log.Fields{
 					"Module": "useragent",
@@ -74,7 +74,7 @@ func (s *summarizer) start() {
 				continue // nothing to update
 			}
 
-			rareSignatureUpdates, err := rareSignatureUpdates(datum, rareSignatures, hostCollection, s.chunk)
+			rareSignatureUpdates, err := rareSignatureUpdates(s.db.Context, datum, rareSignatures, hostCollection, s.chunk)
 			if err != nil {
 				s.log.WithFields(log.Fields{
 					"Module": "useragent",
@@ -137,7 +137,7 @@ db.getCollection('useragent').aggregate([
 
 ])
 */
-func getRareSignaturesForIP(useragentCollection *mgo.Collection, host data.UniqueIP, chunk int) ([]string, error) {
+func getRareSignaturesForIP(ctx context.Context, useragentCollection *mongo.Collection, host data.UniqueIP, chunk int) ([]string, error) {
 	query := []bson.M{
 		{"$match": bson.M{
 			"dat": bson.M{
@@ -183,8 +183,15 @@ func getRareSignaturesForIP(useragentCollection *mgo.Collection, host data.Uniqu
 
 	var aggResults []string
 	var aggResult Result
-	aggIter := useragentCollection.Pipe(query).Iter()
-	for aggIter.Next(&aggResult) {
+	aggIter, err := useragentCollection.Aggregate(ctx, query)
+	if err != nil {
+		return aggResults, nil
+	}
+	for aggIter.Next(ctx) {
+		err = aggIter.Decode(&aggResult)
+		if err != nil {
+			return aggResults, err
+		}
 		aggResults = append(aggResults, aggResult.UserAgent)
 
 	}
@@ -197,7 +204,7 @@ func getRareSignaturesForIP(useragentCollection *mgo.Collection, host data.Uniqu
 // rareSignatureUpdates formats a MongoDB update for an internal host which either inserts a
 // new rare signature host records into that host's dat array in the host collection or updates the
 // existing records in the host's dat array for each rare signature with the current chunk id.
-func rareSignatureUpdates(rareSigIP data.UniqueIP, newSignatures []string, hostCollection *mgo.Collection, chunk int) ([]database.BulkChange, error) {
+func rareSignatureUpdates(ctx context.Context, rareSigIP data.UniqueIP, newSignatures []string, hostCollection *mongo.Collection, chunk int) ([]database.BulkChange, error) {
 	var updates []database.BulkChange
 
 	existingRareSignaturesQuery := []bson.M{
@@ -208,10 +215,12 @@ func rareSignatureUpdates(rareSigIP data.UniqueIP, newSignatures []string, hostC
 	}
 
 	var existingSigs []Result
-	err := hostCollection.Pipe(existingRareSignaturesQuery).AllowDiskUse().All(&existingSigs)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := hostCollection.Aggregate(ctx, existingRareSignaturesQuery, opts)
 	if err != nil {
 		return updates, err
 	}
+	cursor.All(ctx, &existingSigs)
 
 	// place existing signatures in a map to make the cross lookup fast
 	existingSigsMap := make(map[string]struct{})

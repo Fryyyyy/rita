@@ -6,8 +6,10 @@ import (
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/util"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/globalsign/mgo"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 
@@ -31,29 +33,49 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes creates indexes for the host collection
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
-
-	coll := session.DB(r.database.GetSelectedDB()).C(r.config.T.Structure.HostTable)
+	coll := r.database.Client.Database(r.database.GetSelectedDB()).Collection(r.config.T.Structure.HostTable)
 
 	// create hosts collection
 	// Desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"ip", "network_uuid"}, Unique: true},
-		{Key: []string{"local"}},
-		{Key: []string{"ipv4_binary"}},
-		{Key: []string{"dat.mdip.ip", "dat.mdip.network_uuid"}},
-		{Key: []string{"dat.mbdst.ip", "dat.mbdst.network_uuid"}},
-		{Key: []string{"dat.mbproxy"}},
+	indexes := []mongo.IndexModel{
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"ip", 1},
+				{"network_uuid", 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"local", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"ipv4_binary", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"dat.mdip.ip", 1},
+				{"dat.mdip.network_uuid", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"dat.mbdst.ip", 1},
+				{"dat.mbdst.network_uuid", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"dat.mbproxy", 1},
+			},
+		},
 	}
 
-	for _, index := range indexes {
-		err := coll.EnsureIndex(index)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := coll.Indexes().CreateMany(r.database.Context, indexes)
+	return err
 }
 
 // Upsert records the given host data in MongoDB

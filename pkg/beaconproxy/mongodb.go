@@ -10,8 +10,10 @@ import (
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/pkg/uconnproxy"
 	"github.com/activecm/rita/util"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/globalsign/mgo"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
 
@@ -34,14 +36,11 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 }
 
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := r.config.T.BeaconProxy.BeaconProxyTable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -51,13 +50,37 @@ func (r *repo) CreateIndexes() error {
 	}
 
 	// set desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"-score"}},
-		{Key: []string{"src", "fqdn", "src_network_uuid"}, Unique: true},
-		{Key: []string{"src", "src_network_uuid"}},
-		{Key: []string{"fqdn"}},
-		{Key: []string{"-connection_count"}},
-		{Key: []string{"proxy.ip", "proxy.network_uuid"}},
+	indexes := []mongo.IndexModel{
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"score", -1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"src", 1},
+				{"fqdn", 1},
+				{"src_network_uuid", 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"src", 1},
+				{"src_network_uuid", 1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"connection_count", -1},
+			},
+		},
+		mongo.IndexModel{
+			Keys: bson.D{
+				{"proxy.ip", 1},
+				{"proxy.network_uuid", 1},
+			},
+		},
 	}
 
 	// create collection
@@ -72,10 +95,6 @@ func (r *repo) CreateIndexes() error {
 // Upsert derives beacon statistics from the given unique proxy connections and creates
 // summaries for the given local hosts. The results are pushed to MongoDB.
 func (r *repo) Upsert(uconnProxyMap map[string]*uconnproxy.Input, hostMap map[string]*host.Input, minTimestamp, maxTimestamp int64) {
-
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// Create the workers
 
 	// stage 6 - write out results

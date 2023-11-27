@@ -7,7 +7,7 @@ import (
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/util"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -48,9 +48,6 @@ func (r *remover) Remove(cid int) error {
 }
 
 func (r *remover) reduceDNSSubCount(cid int) error {
-	ssn := r.database.Session.Copy()
-	defer ssn.Close()
-
 	//Create the workers
 	writerWorker := newUpdater(
 		cid,
@@ -79,9 +76,15 @@ func (r *remover) reduceDNSSubCount(cid int) error {
 		Host string `bson:"host"`
 	}
 
-	hostnamesIter := ssn.DB(r.database.GetSelectedDB()).C(r.config.T.DNS.HostnamesTable).Find(bson.M{"cid": cid}).Iter()
+	cursor, err := r.database.Client.Database(r.database.GetSelectedDB()).Collection(r.config.T.DNS.HostnamesTable).Find(r.database.Context, bson.M{"cid": cid})
+	if err != nil {
+		return err
+	}
 
-	for hostnamesIter.Next(&res) {
+	for cursor.Next(r.database.Context) {
+		if err = cursor.Decode(&res); err != nil {
+			return err
+		}
 		analyzerWorker.collect(res.Host)
 	}
 

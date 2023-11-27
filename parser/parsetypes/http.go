@@ -2,13 +2,13 @@ package parsetypes
 
 import (
 	"github.com/activecm/rita/config"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // HTTP provides a data structure for entries in zeek's HTTP log file
 type HTTP struct {
 	// ID is the object id as set by mongodb
-	ID bson.ObjectId `bson:"_id,omitempty"`
+	ID primitive.ObjectID `bson:"_id,omitempty"`
 	// TimeStamp of this connection
 	TimeStamp int64 `bson:"ts" bro:"ts" brotype:"time" json:"-"`
 	// TimeStampGeneric is used when reading from json files
@@ -76,12 +76,12 @@ type HTTP struct {
 	AgentUUID string `bson:"agent_uuid" bro:"agent_uuid" brotype:"string" json:"agent_uuid"`
 }
 
-//TargetCollection returns the mongo collection this entry should be inserted
+// TargetCollection returns the mongo collection this entry should be inserted
 func (line *HTTP) TargetCollection(config *config.StructureTableCfg) string {
 	return config.HTTPTable
 }
 
-//ConvertFromJSON performs any extra conversions necessary when reading from JSON
+// ConvertFromJSON performs any extra conversions necessary when reading from JSON
 func (line *HTTP) ConvertFromJSON() {
 	line.TimeStamp = convertTimestamp(line.TimeStampGeneric)
 }

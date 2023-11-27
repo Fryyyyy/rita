@@ -8,10 +8,12 @@ import (
 	"github.com/activecm/rita/pkg/data"
 	"github.com/activecm/rita/pkg/host"
 	"github.com/activecm/rita/util"
-	"github.com/globalsign/mgo"
 	log "github.com/sirupsen/logrus"
 	"github.com/vbauerster/mpb"
 	"github.com/vbauerster/mpb/decor"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type repo struct {
@@ -31,14 +33,11 @@ func NewMongoRepository(db *database.DB, conf *config.Config, logger *log.Logger
 
 // CreateIndexes creates indexes for the SNIconn collection
 func (r *repo) CreateIndexes() error {
-	session := r.database.Session.Copy()
-	defer session.Close()
-
 	// set collection name
 	collectionName := r.config.T.Structure.SNIConnTable
 
 	// check if collection already exists
-	names, _ := session.DB(r.database.GetSelectedDB()).CollectionNames()
+	names, _ := r.database.Client.Database(r.database.GetSelectedDB()).ListCollectionNames(r.database.Context, bson.D{})
 
 	// if collection exists, we don't need to do anything else
 	for _, name := range names {
@@ -48,12 +47,36 @@ func (r *repo) CreateIndexes() error {
 	}
 
 	// set desired indexes
-	indexes := []mgo.Index{
-		{Key: []string{"src", "fqdn", "src_network_uuid"}, Unique: true},
-		{Key: []string{"src", "src_network_uuid"}},
-		{Key: []string{"fqdn"}},
-		{Key: []string{"dat.http.count"}},
-		{Key: []string{"dat.tls.count"}},
+	indexes := []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{"src", 1},
+				{"fqdn", 1},
+				{"src_network_uuid", 1},
+			},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{
+				{"src", 1},
+				{"src_network_uuid", 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{"fqdn", 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{"dat.http.count", 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{"dat.tls.count", 1},
+			},
+		},
 	}
 
 	// create collection

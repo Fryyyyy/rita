@@ -11,6 +11,7 @@ import (
 	"github.com/activecm/rita/resources"
 	"github.com/activecm/rita/util"
 	"github.com/urfave/cli"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 func init() {
@@ -126,7 +127,7 @@ func deleteDatabase(c *cli.Context) error {
 
 func deleteSingleDatabase(res *resources.Resources, db string, dryRun bool) error {
 	// check if database exists
-	collNames, err := res.DB.Session.DB(db).CollectionNames()
+	collNames, err := res.DB.Client.Database(db).ListCollectionNames(res.DB.Context, bson.D{})
 	if err != nil {
 		return err
 	}
@@ -137,7 +138,7 @@ func deleteSingleDatabase(res *resources.Resources, db string, dryRun bool) erro
 	if !dryRun {
 		// delete database if it exists
 		if dbExists {
-			if res.DB.Session.DB(db).DropDatabase() != nil {
+			if res.DB.Client.Database(db).Drop(res.DB.Context) != nil {
 				return errors.New("failed to delete database")
 			}
 		}

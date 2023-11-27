@@ -1,14 +1,16 @@
 package beaconproxy
 
 import (
+	"context"
 	"sync"
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/pkg/data"
 	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type (
@@ -54,15 +56,11 @@ func (s *summarizer) close() {
 func (s *summarizer) start() {
 	s.summaryWg.Add(1)
 	go func() {
-
-		ssn := s.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range s.summaryChannel {
-			proxyBeaconCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.BeaconProxy.BeaconProxyTable)
-			hostCollection := ssn.DB(s.db.GetSelectedDB()).C(s.conf.T.Structure.HostTable)
+			proxyBeaconCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.BeaconProxy.BeaconProxyTable)
+			hostCollection := s.db.Client.Database(s.db.GetSelectedDB()).Collection(s.conf.T.Structure.HostTable)
 
-			maxProxyBeaconSelector, maxProxyBeaconQuery, err := maxProxyBeaconUpdate(
+			maxProxyBeaconSelector, maxProxyBeaconQuery, err := maxProxyBeaconUpdate(s.db.Context,
 				datum, proxyBeaconCollection, hostCollection, s.chunk,
 			)
 			if err != nil {
@@ -90,7 +88,7 @@ func (s *summarizer) start() {
 }
 
 // maxProxyBeaconUpdate finds the highest scoring proxy beacon from this import session for a particular host
-func maxProxyBeaconUpdate(datum data.UniqueIP, beaconProxyColl, hostColl *mgo.Collection, chunk int) (bson.M, bson.M, error) {
+func maxProxyBeaconUpdate(ctx context.Context, datum data.UniqueIP, beaconProxyColl, hostColl *mongo.Collection, chunk int) (bson.M, bson.M, error) {
 
 	var maxBeaconProxy struct {
 		Fqdn  string  `bson:"fqdn"`
@@ -98,9 +96,15 @@ func maxProxyBeaconUpdate(datum data.UniqueIP, beaconProxyColl, hostColl *mgo.Co
 	}
 
 	mbdstQuery := maxProxyBeaconPipeline(datum)
-	err := beaconProxyColl.Pipe(mbdstQuery).One(&maxBeaconProxy)
+	cursor, err := beaconProxyColl.Aggregate(ctx, mbdstQuery)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if cursor.Next(ctx) {
+		if err = cursor.Decode(&maxBeaconProxy); err != nil {
+			panic(err)
+		}
 	}
 
 	hostSelector := datum.BSONKey()
@@ -109,7 +113,7 @@ func maxProxyBeaconUpdate(datum data.UniqueIP, beaconProxyColl, hostColl *mgo.Co
 		bson.M{"dat": bson.M{"$elemMatch": bson.M{"mbproxy": bson.M{"$exists": true}}}},
 	)
 
-	nExistingEntries, err := hostColl.Find(hostWithDatEntrySelector).Count()
+	nExistingEntries, err := hostColl.CountDocuments(ctx, hostWithDatEntrySelector)
 	if err != nil {
 		return nil, nil, err
 	}

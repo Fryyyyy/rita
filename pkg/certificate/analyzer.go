@@ -5,7 +5,7 @@ import (
 
 	"github.com/activecm/rita/config"
 	"github.com/activecm/rita/database"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type (
@@ -50,9 +50,6 @@ func (a *analyzer) close() {
 func (a *analyzer) start() {
 	a.analysisWg.Add(1)
 	go func() {
-		ssn := a.db.Session.Copy()
-		defer ssn.Close()
-
 		for datum := range a.analysisChannel {
 			// cap the list to an arbitrary amount (hopefully smaller than the 16 MB document size cap)
 			// anything approaching this limit will cause performance issues in software that depends on rita

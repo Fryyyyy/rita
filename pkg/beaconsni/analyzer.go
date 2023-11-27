@@ -9,8 +9,8 @@ import (
 	"github.com/activecm/rita/database"
 	"github.com/activecm/rita/util"
 
-	"github.com/globalsign/mgo/bson"
 	log "github.com/sirupsen/logrus"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 type (

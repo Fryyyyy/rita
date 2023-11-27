@@ -2,17 +2,15 @@ package blacklist
 
 import (
 	"github.com/activecm/rita/resources"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-//HostnameResults finds blacklisted hostnames in the database and the IPs of the
-//hosts which connected to the blacklisted hostnames. The results will be sorted in
-//descending order keyed on of {uconn_count, conn_count, total_bytes} depending on the value
-//of sort. limit and noLimit control how many results are returned.
+// HostnameResults finds blacklisted hostnames in the database and the IPs of the
+// hosts which connected to the blacklisted hostnames. The results will be sorted in
+// descending order keyed on of {uconn_count, conn_count, total_bytes} depending on the value
+// of sort. limit and noLimit control how many results are returned.
 func HostnameResults(res *resources.Resources, sort string, limit int, noLimit bool) ([]HostnameResult, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	blHostsQuery := []bson.M{
 		// find blacklisted hostnames and the IPs associated with them
 		{"$match": bson.M{"blacklisted": true}},
@@ -103,34 +101,35 @@ func HostnameResults(res *resources.Resources, sort string, limit int, noLimit b
 
 	var blHosts []HostnameResult
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.DNS.HostnamesTable).Pipe(blHostsQuery).AllowDiskUse().All(&blHosts)
-
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.DNS.HostnamesTable).Aggregate(res.DB.Context, blHostsQuery, opts)
+	if err != nil {
+		return blHosts, err
+	}
+	err = cursor.All(res.DB.Context, &blHosts)
 	return blHosts, err
 }
 
-//SrcIPResults finds blacklisted source IPs in the database and the IPs of the
-//hosts which the blacklisted IP connected to. The results will be sorted in
-//descending order keyed on of {uconn_count, conn_count, total_bytes} depending on the value
-//of sort. limit and noLimit control how many results are returned.
+// SrcIPResults finds blacklisted source IPs in the database and the IPs of the
+// hosts which the blacklisted IP connected to. The results will be sorted in
+// descending order keyed on of {uconn_count, conn_count, total_bytes} depending on the value
+// of sort. limit and noLimit control how many results are returned.
 func SrcIPResults(res *resources.Resources, sort string, limit int, noLimit bool) ([]IPResult, error) {
 	return ipResults(res, sort, limit, noLimit, true)
 }
 
-//DstIPResults finds blacklisted destination IPs in the database and the IPs of the
-//hosts which connected to the blacklisted IP. The results will be sorted in
-//descending order keyed on of {uconn_count, conn_count, total_bytes} depending on the value
-//of sort. limit and noLimit control how many results are returned.
+// DstIPResults finds blacklisted destination IPs in the database and the IPs of the
+// hosts which connected to the blacklisted IP. The results will be sorted in
+// descending order keyed on of {uconn_count, conn_count, total_bytes} depending on the value
+// of sort. limit and noLimit control how many results are returned.
 func DstIPResults(res *resources.Resources, sort string, limit int, noLimit bool) ([]IPResult, error) {
 	return ipResults(res, sort, limit, false, noLimit)
 }
 
-//ipResults implements SrcIPResults and DstIPResults. Set sourceDestFlag to true
-//to find blacklisted source IPs. Set sourceDestFlag to false to find blacklisted
-//destination IPs.
+// ipResults implements SrcIPResults and DstIPResults. Set sourceDestFlag to true
+// to find blacklisted source IPs. Set sourceDestFlag to false to find blacklisted
+// destination IPs.
 func ipResults(res *resources.Resources, sort string, limit int, noLimit bool, sourceDestFlag bool) ([]IPResult, error) {
-	ssn := res.DB.Session.Copy()
-	defer ssn.Close()
-
 	var hostMatch bson.M
 	var blHostField string
 	var blPeerField string
@@ -261,8 +260,13 @@ func ipResults(res *resources.Resources, sort string, limit int, noLimit bool, s
 		blIPQuery = append(blIPQuery, bson.M{"$limit": limit})
 	}
 
-	err := ssn.DB(res.DB.GetSelectedDB()).C(res.Config.T.Structure.HostTable).Pipe(blIPQuery).AllowDiskUse().All(&blIPs)
+	opts := options.Aggregate().SetAllowDiskUse(true)
+	cursor, err := res.DB.Client.Database(res.DB.GetSelectedDB()).Collection(res.Config.T.Structure.HostTable).Aggregate(res.DB.Context, blIPQuery, opts)
+	if err != nil {
+		return blIPs, err
+	}
 
+	err = cursor.All(res.DB.Context, &blIPs)
 	return blIPs, err
 
 }
